@@ -113,7 +113,7 @@ async function api(path, body, heads, signal) {
   const text = await res.text();
   let data;
   try { data = text ? JSON.parse(text) : null; } catch {
-    throw new Error(text.trim().slice(0, 200) || `${res.status} ${res.statusText}`);
+    throw new Error(notJSON(res, text));
   }
   if (!res.ok) {
     const err = new Error(data?.error || `${res.status} ${res.statusText}`);
@@ -124,6 +124,8 @@ async function api(path, body, heads, signal) {
     // magpie has no models to connect an agent to yet: said in the
     // reader's language
     if (data?.code === "no_models") err.message = t("Add a provider or subscription in magpie first, then connect {agent}", { agent: data.agent });
+    // magpie has models, and none is left in the agent's model list (#1989)
+    if (data?.code === "all_hidden") err.message = t("None of magpie's models is left in {agent}'s model list: pick one under Model list → Pick, then connect {agent}", { agent: data.agent });
     if (data?.why) err.why = data.why; // a failed move's reason, said in the reader's language
     // an account the agent is signed in to, refused removal while it has
     // another: said in the reader's language
@@ -164,6 +166,23 @@ async function api(path, body, heads, signal) {
   // session's or a library's words aren't looked through
   if (data && typeof data === "object" && !/^(sessions|library|skills|plugins|market)/.test(path)) noteAccounts(data);
   return data;
+}
+
+// notJSON is what an answer that isn't magpie's JSON says. A web page is
+// a proxy's or a tunnel's own, not magpie's: magpie web behind Cloudflare
+// got its 524 page when an install outlasted Cloudflare's 100 seconds,
+// shown as "<!DOCTYPE html> <!--[if lt IE 7]>…" (precisionz, #2032). It is
+// said by its title, and a timeout says magpie may still be finishing.
+function notJSON(res, text) {
+  const body = text.trim();
+  const html = /text\/html/i.test(res.headers.get("content-type") || "") || /^<(!doctype|html|head|body)\b/i.test(body);
+  if (!html) return body.slice(0, 200) || `${res.status} ${res.statusText}`;
+  let title = "";
+  try { title = new DOMParser().parseFromString(body, "text/html").title.replace(/\s+/g, " ").trim(); } catch {}
+  const what = title || `${res.status} ${res.statusText}`.trim();
+  // 504 and Cloudflare's 524: it stopped waiting, magpie didn't stop
+  if (res.status === 504 || res.status === 524) return t("A proxy in front of magpie stopped waiting; magpie may still be finishing, check again in a minute ({what})", { what });
+  return t("A proxy in front of magpie answered, not magpie ({what})", { what });
 }
 
 function el(tag, cls, text) {
@@ -8922,6 +8941,10 @@ function drawEditor(p, presetID) {
   }
 
   if (p) ed.append(...field(t("Models"), renderModels(p), ""));
+  // Azure OpenAI's models are its deployments, which magpie lists with the
+  // key once the resource is added (#1995): said here, so no one takes the
+  // add page for one where they must type them
+  else if (pr?.id === "azure") ed.append(...field(t("Models"), el("div", "hint azure-models", t("No need to type them: once added, magpie lists the deployments this key can call. Type a deployment's name as a model id only if that list can't be fetched.")), ""));
   if (p?.drawIds?.length) ed.append(...renderDrawers(p));
   {
     // the window agents are told a model has, over what the vendor or
@@ -9049,7 +9072,7 @@ function drawEditor(p, presetID) {
       balPair.append(res);
       balPair.classList.add("wrap");
     }
-    inner.append(...field(t("Balance field"), balPair, t("Where the amount is in the reply, e.g. data.balance; it can be a sum with + - * / and brackets, e.g. data.total / 500000 or (1 - credits.used / 70) %; \"$\" in front adds the sign, \"%\" after it shows a percent, with a bar; several, each with a label, go apart by \";\", e.g. 5h: a.used / a.cap %; $credits.left")));
+    inner.append(...field(t("Balance field"), balPair, t("Where the amount is in the reply, e.g. data.balance; it can be a sum with + - * / and brackets, e.g. data.total / 500000 or (1 - credits.used / 70) %; \"$\" in front adds the sign, \"%\" after it shows a percent, with a bar; several, each with a label, go apart by \";\", e.g. 5h: a.used / a.cap %; $credits.left; a list's items are a.*.used, or a[status=active].used for those that match, put in sum(), max(), min() or count(); an amount the reply hasn't shows \"—\" and the others still show")));
     more.append(inner);
     ed.append(more);
   }
@@ -10031,6 +10054,15 @@ const servedIds = (p) => draft.chosen.length ? draft.chosen : draft.none ? [] : 
 // tall held, as app.css's .mchips max-height: min(132px, 28vh) says
 let modelsOpen = false;
 const MCHIPS_MAX = 132;
+// emptyModelsHint is what an empty model list says. Azure OpenAI's is its
+// deployments, asked for with the key after it is added (#1995): while that
+// is under way it says so, and after it says the deployments' names are
+// what to type; every other provider's is the vendor's list.
+function emptyModelsHint(p) {
+  if (p.preset !== "azure") return "The vendor's list is empty. Fetch models again, or type a model id.";
+  if (providers?.fetching && !p.fetched && !p.listError) return "Asking your resource for its deployments with this key…";
+  return "No deployments came back for this key. Fetch models again, or type a deployment's name as a model id.";
+}
 function renderModels(p) {
   // a chip's dot: how its model answered, when it has been asked
   const tested = (c, id) => {
@@ -10232,7 +10264,7 @@ function renderModels(p) {
       c.onclick = () => { draft.chosen = draft.chosen.filter((x) => x !== id); draft.none = true; draw(); };
       chips.append(c);
     }
-    if (!p.models.length && !draft.chosen.length) chips.append(el("span", "hint", t("The vendor's list is empty. Fetch models again, or type a model id.")));
+    if (!p.models.length && !draft.chosen.length) chips.append(el("span", "hint", t(emptyModelsHint(p))));
     // the list is of models agents chat with: image, embedding and speech
     // models are left out of it, and an image model is set in Settings
     else if (f && !chips.children.length) chips.append(el("span", "hint", t("No model here matches “{q}”. Image, embedding and speech models aren't listed, as agents can't chat with them: pick an image model in Settings → Images.", { q: q.value.trim() })));
@@ -14181,7 +14213,7 @@ function loadQuotas(asked, again) {
   if (!again) quotasTries = 0;
   let reading = false, same = false;
   const p = Promise.resolve(quotasLoading).catch(() => {})
-    .then(() => Promise.all([api("usage/quotas" + (asked ? "?asked=1" : ""), undefined, (h) => { reading = h.get("X-Magpie-Reading") === "1"; }), api("usage/quotas/history?days=35").catch(() => null)]))
+    .then(() => Promise.all([api("usage/quotas" + (asked ? "?asked=1" : ""), undefined, (h) => { reading = h.get("X-Magpie-Reading") === "1"; }), api("usage/quotas/history?days=45").catch(() => null)]))
     .then(([q, h]) => {
       // an answer that isn't a list of cards is a read that failed: what
       // was read before stays, as it does when the read is refused
@@ -14587,8 +14619,10 @@ function renderQuotas() {
       if (folded.has(sub)) continue;
       // "Every model" by the account, or the card's name: where the click
       // was, whichever way the meters under it grow or shrink
-      const [meters, every] = familyQuota(sub);
       const brief = several && !usageAcctOpen(sub, subs);
+      const history = !brief && quotaHistoryView(sub);
+      const shownSub = history ? quotaHistoryCard(sub, history) : sub;
+      const [meters, every] = history ? [quotaWindows(shownSub), null] : familyQuota(sub);
       if (sub.user) {
         const who = el("div", "subscription-account" + (brief ? " brief" : ""));
         who.dataset.card = trayCardID(sub);
@@ -14607,31 +14641,31 @@ function renderQuotas() {
       if (brief) meters.classList.add("brief");
       card.append(meters);
       // a remote magpie's gateway key: what its windows don't say (#1547)
-      const keyLine = !brief && keyLimitLine(sub);
+      const keyLine = !brief && !history && keyLimitLine(sub);
       if (keyLine) card.append(keyLine);
       // how many of the period's requests to it magpie made itself (#1839)
-      const own = !brief && ownLine(sub);
+      const own = !brief && !history && ownLine(sub);
       if (own) card.append(own);
       // WorkBuddy's, Trae CN's or MiniMax Code's daily check-in, how this account's went,
       // and the switch for it, on the card rather than only in Settings
       // (#694); the switch on the first card of each vendor's
-      if (sub.checkins) card.append(checkinRow(sub, sub === subs.find((x) => x.checkins && (x.checkinBy || "") === (sub.checkinBy || "")), subs));
+      if (sub.checkins && !history) card.append(checkinRow(sub, sub === subs.find((x) => x.checkins && (x.checkinBy || "") === (sub.checkinBy || "")), subs));
       // what was left over time, against an even burn (#651)
       const curve = !brief && !sub.error && quotaCurve(sub);
       if (curve) card.append(curve);
       // WorkBuddy's credits, day by day, as magpie counted them (#568)
-      if (!brief && sub.daily && !sub.error) card.append(creditDays(sub));
+      if (!brief && !history && sub.daily && !sub.error) card.append(creditDays(sub));
       // what is left besides the windows, under them
-      if (sub.balance && sub.windows?.length && !sub.error) card.append(balanceRow(sub, "What is left on the account besides its windows", false));
+      if (!history && sub.balance && sub.windows?.length && !sub.error) card.append(balanceRow(sub, "What is left on the account besides its windows", false));
       // the balance over time, and when it runs out at that pace
-      const spend = !brief && !sub.error && balanceCurve(sub);
+      const spend = !brief && !history && !sub.error && balanceCurve(sub);
       if (spend) card.append(spend);
       // when the windows were read: "Updated 3 min ago", or the time of
       // ones standing in for a reading that failed just now (#802; a
       // balance alone says it in its row)
-      const read = !brief && sub.windows?.length && !sub.error && readWhen(sub, true);
+      const read = !brief && sub.windows?.length && !sub.error && readWhen(shownSub, true);
       if (read) card.append(read);
-      if (!brief && sub.resets?.count) {
+      if (!brief && !history && sub.resets?.count) {
         const r = el("div", "quota-resets");
         r.append(resetsWords(sub.resets, sub));
         // only Codex's are spent from here: a GLM team's are spent on
@@ -14645,10 +14679,10 @@ function renderQuotas() {
         card.append(r);
       }
       // the account's standing say on its resets, held or not (#719)
-      const policy = !brief && autoResetRow(sub, "quota-autoreset");
+      const policy = !brief && !history && autoResetRow(sub, "quota-autoreset");
       if (policy) card.append(policy);
       // and on its credits, when its windows run out
-      const credits = !brief && creditsRow(sub, "quota-credits");
+      const credits = !brief && !history && creditsRow(sub, "quota-credits");
       if (credits) card.append(credits);
     }
     // in the card's head, beside its name: no line of its own
@@ -15043,6 +15077,7 @@ function creditDays(sub) {
 // a dashed line from the window's start to its reset is an even burn, and
 // a thin upright one is now. "2 days" is the last two days; "Cycle" the
 // current cycle of the account's longest window, its start to its reset;
+// each account can pick an earlier recorded cycle beside its plot.
 // "Off" draws none, on the Usage page or on the tray's cards (ARNO on
 // Discord: 额度面板变得非常混乱和难以观看了). One pick in the allowances'
 // head turns every card, remembered, and the tray panel follows it.
@@ -15101,7 +15136,73 @@ function quotaCycleBreak(a, b) {
   if (a.reset == null || b.reset == null) return true;
   if (a.reset <= b.at) return true;
   const moved = b.reset - a.reset, slack = 5 * 60e3;
+  const rolling = moved > 0 && Math.abs(moved - (b.at - a.at)) <= slack;
+  if (!rolling && Math.abs(moved) <= slack && b.left > a.left + 5) return true;
   return moved > b.at - a.at + slack || moved < -slack;
+}
+// Recorded cycles, never weeks counted back from today's deadline. An
+// early reset ends the preceding cycle at the first observed new reading
+// unless the vendor's new start fits between those readings.
+function quotaRecordedCycles(l) {
+  const cycles = [];
+  for (const p of l.points) {
+    let c = cycles[cycles.length - 1];
+    const prev = c?.points[c.points.length - 1];
+    if (!prev || quotaCycleBreak(prev, p)) {
+      let start = p.start ?? p.at;
+      if (prev && (prev.reset == null || prev.reset > p.at) && !(start > prev.at && start <= p.at)) start = p.at;
+      if (prev?.reset != null && prev.reset <= p.at) start = Math.max(start, prev.reset);
+      if (c) c.end = Math.min(c.end, start);
+      c = { id: String(p.at), start, end: p.reset ?? p.at, points: [] };
+      cycles.push(c);
+    }
+    c.points.push(p);
+    c.end = p.reset ?? p.at;
+  }
+  return cycles;
+}
+// The longest recorded window owns the cycle picker (usually a week).
+// Shorter windows still draw, with their own reset breaks, in that range.
+function quotaPastCycles(lines, now) {
+  const longest = lines.reduce((a, b) => {
+    const span = (l) => Math.max(...l.points.map((p) => p.reset != null && p.start != null ? p.reset - p.start : 0));
+    return span(b) > span(a) ? b : a;
+  });
+  return { line: longest, cycles: quotaRecordedCycles(longest).filter((c, i, all) => i < all.length - 1 || c.end <= now).reverse() };
+}
+const quotaCyclePicks = new Map(); // account -> recorded cycle's first reading
+// One selection drives both the meters and the curve. A snapshot contains
+// only the fields history actually kept, never today's counts or holds.
+function quotaHistoryView(sub, lines = quotaLines(sub), now = Date.now()) {
+  if (quotaRange !== "cycle" || sub.error || !lines.length) return null;
+  const past = quotaPastCycles(lines, now);
+  const picked = past.cycles.find((c) => c.id === quotaCyclePicks.get(usageAcctKey(sub)));
+  if (!picked) return null;
+  const shown = lines.map((l) => {
+    const points = l === past.line ? picked.points : l.points.filter((p) => p.at >= picked.start && p.at < picked.end);
+    const last = points.at(-1);
+    return { ...l, points, cycle: l === past.line ? { start: picked.start, reset: picked.end } : last ? { start: last.start ?? points[0].at, reset: last.reset } : {} };
+  });
+  return { picked, shown };
+}
+function quotaHistoryCard(sub, { picked, shown }) {
+  const windows = familyWindows(sub.windows).map((w) => {
+    const name = w.pool ? w.pool + " · " + w.name : w.name;
+    const last = shown.find((l) => l.name === name)?.points.at(-1);
+    const base = { name: w.name, pool: w.pool, historyMissing: !last };
+    if (!last) return base;
+    return { ...base, used: 100 - last.left, recordedAt: last.at,
+      resetsAt: new Date(Math.min(last.reset ?? picked.end, picked.end)).toISOString() };
+  });
+  const at = Math.max(...windows.filter((w) => !w.historyMissing).map((w) => w.recordedAt));
+  return { ...sub, windows, history: true, asOf: null, readAt: Number.isFinite(at) ? new Date(at).toISOString() : null };
+}
+function quotaCycleLength(c) {
+  let minutes = Math.max(1, Math.round((c.end - c.start) / 60e3));
+  const days = Math.floor(minutes / 1440); minutes %= 1440;
+  const hours = Math.floor(minutes / 60); minutes %= 60;
+  return [[days, "day"], [hours, "hour"], [minutes, "minute"]].filter(([n]) => n).map(([n, unit]) =>
+    new Intl.NumberFormat(intlLang(), { style: "unit", unit, unitDisplay: "short" }).format(n)).join(" ");
 }
 // the current cycle of a line: its start and its reset, the window's as
 // the card has it, else its last reading's
@@ -15114,6 +15215,7 @@ function quotaCycle(l, now) {
     while (i > 0 && !quotaCycleBreak(l.points[i - 1], l.points[i])) i--;
     start = l.points[i].at;
   }
+  if (reset === last.reset) start = Math.max(start, quotaRecordedCycles(l).at(-1).start);
   if (reset != null && reset <= now) reset = null;
   return { start: Math.min(start, now), reset };
 }
@@ -15153,6 +15255,11 @@ function quotaTimeText(at, now) {
   const time = d.toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit", hour12: false });
   return sameDay ? time : d.toLocaleDateString(lang, { month: "short", day: "numeric" }) + " " + time;
 }
+// A completed cycle can end today; still say both dates in its menu and
+// axis, so a multi-day cycle doesn't read as two times on the first day.
+function quotaCycleDate(at) {
+  return new Date(at).toLocaleString(intlLang(), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+}
 // drawQuotaPlot puts lines' curves for [x0, x1] in svg, a w×h box:
 // the grid, the even burns, the lines, and now.
 function drawQuotaPlot(g, lines, x0, x1, w, h, now, thin) {
@@ -15161,7 +15268,7 @@ function drawQuotaPlot(g, lines, x0, x1, w, h, now, thin) {
   const X = (t) => ((t - x0) / (x1 - x0)) * w;
   lines.forEach((l, i) => {
     const color = `var(--c${(i % 7) + 1})`;
-    const c = quotaCycle(l, now);
+    const c = l.cycle || quotaCycle(l, now);
     // a window far shorter than the span (a 5-hour one over a week) is
     // drawn faint, without its even burn, an all but upright dash
     const short = !thin && c.reset && c.reset - c.start < (x1 - x0) / 12;
@@ -15184,7 +15291,9 @@ function quotaCurve(sub) {
   if (!lines.length) return null;
   const box = el("div", "quota-curve");
   const head = el("div", "qc-head");
-  const range = el("span", "qc-range");
+  const range = el("button", "text qc-range");
+  range.type = "button";
+  const key = usageAcctKey(sub);
   head.append(el("span", "", t("Left over time")), range);
   // what the dashes are isn't plain from the plot (John on Discord asked)
   box.title = t("Solid: what was left. Dashed: an even pace, full at the cycle's start to empty at its reset; a line above its dashes lasts the cycle, one below runs out before the reset.");
@@ -15193,24 +15302,46 @@ function quotaCurve(sub) {
   curveZoom(box, g);
   const axis = el("div", "qc-axis");
   const legend = el("div", "qc-legend");
-  lines.forEach((l, i) => {
-    const k = el("span", "qc-key");
-    const sw = el("i");
-    sw.style.background = `var(--c${(i % 7) + 1})`;
-    const last = l.points[l.points.length - 1];
-    k.append(sw, el("span", "", l.label), el("b", "", Math.round(last.left) + "%"));
-    k.title = [t("{name}: {n} left, read {when}", { name: l.label, n: Math.round(last.left) + "%", when: quotaTimeText(last.at, Date.now()) }),
-      "", t("Latest readings:"), ...quotaReadings(l, Date.now())].join("\n");
-    legend.append(k);
-  });
+  const drawLegend = (shown, now) => {
+    legend.replaceChildren();
+    shown.forEach((l, i) => {
+      const k = el("span", "qc-key");
+      const sw = el("i");
+      sw.style.background = `var(--c${(i % 7) + 1})`;
+      const last = l.points[l.points.length - 1];
+      if (!last) return;
+      k.append(sw, el("span", "", l.label), el("b", "", Math.round(last.left) + "%"));
+      k.title = [t("{name}: {n} left, read {when}", { name: l.label, n: Math.round(last.left) + "%", when: quotaTimeText(last.at, now) }),
+        "", t("Latest readings:"), ...quotaReadings(l, now)].join("\n");
+      legend.append(k);
+    });
+  };
   box.draw = () => {
     const now = Date.now();
-    const [x0, x1] = quotaSpan(lines, quotaRange, now);
-    drawQuotaPlot(g, lines, x0, x1, W, H, now);
-    const r = t(quotaRange === "2d" ? "2 days" : "Cycle");
+    const past = quotaPastCycles(lines, now);
+    const history = quotaHistoryView(sub, lines, now);
+    const picked = history?.picked;
+    const [x0, x1] = picked ? [picked.start, picked.end] : quotaSpan(lines, quotaRange, now);
+    // Keep only readings of the selected cycle. In particular, a refill
+    // at its end belongs to the next cycle, not this cycle's last figure.
+    const shown = history?.shown || lines;
+    drawQuotaPlot(g, shown, x0, Math.max(x0 + 1, x1), W, H, now);
+    const r = picked ? t("Past cycle") : t(quotaRange === "2d" ? "2 days" : "Cycle");
     range.textContent = r;
+    range.disabled = quotaRange !== "cycle" || !past.cycles.length;
+    range.title = t("Choose a recorded cycle");
+    range.setAttribute("aria-label", t("Choose a recorded cycle"));
+    if (!range.disabled) range.append(svg(CHEV, 9, 1.6));
+    range.onclick = (e) => {
+      e.stopPropagation();
+      if (range.classList.contains("open")) return closeProtoMenu();
+      openProtoMenu(range, [{ v: "", name: "Cycle", note: "The current cycle, from the window's start to its reset" }, ...past.cycles.map((c) => ({
+        v: c.id, name: quotaCycleDate(c.start) + " – " + quotaCycleDate(c.end), literalName: true, note: t("Recorded duration: {duration}", { duration: quotaCycleLength(c) }),
+      }))], picked?.id || "", (id) => { if (id) quotaCyclePicks.set(key, id); else quotaCyclePicks.delete(key); renderQuotas(); }, "Choose a recorded cycle", "sess-menu");
+    };
     g.setAttribute("aria-label", t("Left over time") + " · " + r);
-    axis.replaceChildren(el("span", "", quotaTimeText(x0, now)), el("span", "", quotaTimeText(x1, now)));
+    axis.replaceChildren(el("span", "", picked ? quotaCycleDate(x0) : quotaTimeText(x0, now)), el("span", "", picked ? quotaCycleDate(x1) : quotaTimeText(x1, now)));
+    drawLegend(shown, now);
   };
   box.append(head, g, axis, legend);
   box.draw();
@@ -15218,8 +15349,7 @@ function quotaCurve(sub) {
 }
 // quotaReadings: a line's last eight readings, newest first, each what was
 // left and when it was read (#802), a line each, ↻ where the window
-// started again; for its legend key's title, the card keeping no control
-// of its own
+// started again; for its legend key's title
 function quotaReadings(l, now) {
   const pts = l.points.slice(-8);
   return pts.map((p, i) => (i > 0 && quotaCycleBreak(pts[i - 1], p) ? "↻ " : "") + Math.round(p.left) + "% · " + quotaTimeText(p.at, now)).reverse();
@@ -15312,13 +15442,10 @@ function balanceCurve(sub) {
 }
 function setQuotaRange(id) {
   if (id === quotaRange) return;
-  const was = quotaRange;
   quotaRange = id;
   try { localStorage.setItem("magpie.quotaRange", id); } catch {}
-  // turned on or off, the cards are made again; a range redraws them
-  if (was === "off" || id === "off") return renderQuotas();
-  renderQuotaTrend();
-  for (const b of document.querySelectorAll(".quota-curve")) b.draw?.();
+  // A range also restores today's meters when leaving a historical cycle.
+  renderQuotas();
 }
 // quotaSpark: the tray card's thin line of a window's current cycle, the
 // even burn faint under it; none while the curves are off
@@ -15859,16 +15986,19 @@ function panelBalances(bals) {
     // the others each a quiet line, a percent a meter (#420)
     const parts = q.balanceParts?.length ? q.balanceParts : [{ text: q.balance }];
     for (const [i, p] of parts.entries()) {
-      if (!i && !p.label) card.append(el("b", "pq-amt", p.text));
+      let amount;
+      if (!i && !p.label) card.append(amount = el("b", "pq-amt", p.text));
       else if (!i) {
-        const lead = el("span", "pq-lead");
-        lead.append(el("b", "pq-amt", p.text), el("span", "", p.label));
-        card.append(lead);
+        amount = el("span", "pq-lead");
+        amount.append(el("b", "pq-amt", p.text), el("span", "", p.label));
+        card.append(amount);
       } else {
-        const line = el("span", "pq-sub pq-bp");
-        line.append(el("span", "", p.label || ""), el("b", "", p.text));
-        card.append(line);
+        amount = el("span", "pq-sub pq-bp");
+        amount.append(el("span", "", p.label || ""), el("b", "", p.text));
+        card.append(amount);
       }
+      // an amount the reply hadn't, "—": why, on hover (#1993)
+      if (p.error) amount.title = p.error;
       if (p.percent != null) card.append(balanceMeter(p.percent));
     }
     // standing in for a reading that failed just now: as of when
@@ -16568,6 +16698,8 @@ function balanceRow(sub, why, when = true) {
   for (const [i, p] of (parts || []).entries()) {
     const row = el("div", "bal-part" + (i ? "" : " lead"));
     row.append(el("span", "", p.label || (i ? "" : t("Balance"))), el("b", "", p.text));
+    // an amount the reply hadn't, "—": why, on hover (#1993)
+    if (p.error) row.title = p.error;
     if (p.percent != null) row.append(balanceMeter(p.percent));
     b.append(row);
   }
@@ -16592,7 +16724,9 @@ function balanceMeter(percent) {
 // refresh is left of it.
 function readWhen(q, refresh = false) {
   let s;
-  if (q.asOf) {
+  if (q.history && q.readAt) {
+    s = el("div", "quota-read", t("Last reading {when}", { when: quotaCycleDate(Date.parse(q.readAt)) }));
+  } else if (q.asOf) {
     s = el("div", "quota-read stale", asOfText(q));
     s.title = asOfText(q);
   } else if (q.readAt) {
@@ -16747,15 +16881,18 @@ function quotaWindows(sub) {
     // the count and its share in parts, so a count too long for its
     // window's width goes to a second line at the · rather than cut short
     const n = el("button", "quota-n");
-    const [count, share] = quotaText(w).split(" · ");
+    const text = w.historyMissing ? t("No readings in this cycle") : quotaText(w);
+    const [count, share] = text.split(" · ");
     n.append(el("span", "", share ? count + " ·" : count));
     if (share) n.append(" ", el("span", "", share));
-    n.title = quotaText(w) + "\n" + t(quotaLeft ? "Show how much of each window is used" : "Show how much of each window is left");
+    n.title = w.historyMissing ? text : text + "\n" + t(quotaLeft ? "Show how much of each window is used" : "Show how much of each window is left");
+    n.disabled = !!w.historyMissing;
     n.onclick = () => setQuotaLeft(!quotaLeft);
     labels.append(el("span", "", t(w.name)), n);
     const track = el("div", "quota-track");
     const fill = el("i");
-    fill.style.width = `${quotaFill(w)}%`;
+    fill.style.width = w.historyMissing ? "0%" : `${quotaFill(w)}%`;
+    if (w.historyMissing) track.style.visibility = "hidden";
     track.append(fill);
     quota.append(labels);
     if (!w.unlimited) quota.append(track);
@@ -16764,10 +16901,10 @@ function quotaWindows(sub) {
     if (w.resetsAt) {
       const at = new Date(w.resetsAt);
       r = el("div", "quota-reset");
-      r.append(el("span", "", resetText(at) + (at > Date.now() ? " ·" : "")));
-      if (at > Date.now()) r.append(" ", el("span", "", untilText(at)));
+      r.append(el("span", "", sub.history ? t("Cycle ended {when}", { when: quotaCycleDate(+at) }) : resetText(at) + (at > Date.now() ? " ·" : "")));
+      if (!sub.history && at > Date.now()) r.append(" ", el("span", "", untilText(at)));
       quota.append(r);
-      quota.title = resetText(at, at.toLocaleString(intlLang()));
+      quota.title = sub.history ? t("Last reading {when}", { when: quotaCycleDate(w.recordedAt) }) : resetText(at, at.toLocaleString(intlLang()));
     }
     // credits that run out before then, or with no reset at all
     const out = runsOutText(w);

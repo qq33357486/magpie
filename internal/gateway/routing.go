@@ -616,9 +616,12 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// "in 59 minutes", the resets_at turned Retry-After and cut to an
 		// hour, then was tried, refused and benched again)
 		d, r.By = quotaRest, "quota"
-		if own := c.p.QuotaRestFor(); own > 0 {
-			// as long as the user set for this provider (#1772: Ollama
-			// Cloud's weekly limit says nothing of when it renews)
+		// as long as the user set for this provider (#1772: Ollama
+		// Cloud's weekly limit says nothing of when it renews), or until
+		// the time of day they said its allowance comes back (#2008: a
+		// free tier's daily quota)
+		own := c.p.OwnQuotaRest(now)
+		if own > 0 {
 			d = own
 		}
 		if w := resetsAt(body, now); w > 0 {
@@ -627,7 +630,11 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			d, r.By = w, "resets"
 		} else if t := c.full(now); !t.IsZero() {
 			d, r.By = t.Sub(now), "window"
-		} else if w := retryAfter(header, now); w > 0 {
+		} else if w := retryAfter(header, now); w > 0 && (w < longestWait || own <= w) {
+			// a "try again in" cut to the longest wait asked for longer
+			// still: the user's own longer rest stands then (#2008: a
+			// daily quota's Retry-After of an hour or more had the seat
+			// asked again every hour, whatever rest the user set)
 			d, r.By = w, "retry-after"
 		}
 		d = min(d, longestQuota)
@@ -658,7 +665,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		routed.failures[counted]++
 		n := routed.failures[counted]
 		routed.Unlock()
-		d, r.By, r.Failures = min(fallbackCooldown<<min(n-1, 10), longestRetry), "backoff", n
+		d, r.By, r.Failures = min(fallbackCooldown<<min(n-1, 10), c.p.RestCapOr(longestRetry)), "backoff", n
 		// a subscription that failed with a window full is out of it,
 		// whatever it said; a key isn't: a relay out of accounts for
 		// everyone (sub2api's 503) says nothing of the key's own windows.
@@ -743,7 +750,7 @@ func (s *Server) rateRest(c candidate, header http.Header, body []byte, sharedPo
 		}
 	}
 	restingUntil.Unlock()
-	d, by := min(fallbackCooldown<<min(n-1, 10), longestRateRest), "cooldown"
+	d, by := min(fallbackCooldown<<min(n-1, 10), c.p.RestCapOr(longestRateRest)), "cooldown"
 	if n > 1 {
 		by = "backoff"
 	}

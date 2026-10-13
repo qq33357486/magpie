@@ -55,7 +55,7 @@ line; agents connected to magpie lose it when it quits.
   paste.
 - **Providers with one field.** Pick a preset (Anthropic, OpenAI, Gemini,
   DeepSeek, Kimi, GLM, MiniMax, StepFun, Qwen, Baidu Qianfan, Tencent Cloud Token Plan,
-  Huawei Cloud MaaS, Volcengine Ark, Mistral, Groq, xAI, OpenRouter, Together,
+  Huawei Cloud MaaS, Volcengine Ark, Mistral, Groq, Nous Portal, xAI, OpenRouter, Together,
   Fireworks, SiliconFlow, NVIDIA NIM, ModelScope, AiHubMix, PipeLLM, 302.AI, Ollama, LM Studio…),
   paste a key, done. Custom vendors need a name and a base URL. magpie never
   reads keys from your shell environment.
@@ -1371,7 +1371,11 @@ rests comes from the first of these that is known: the reset time in the
 refusal (Claude Code's `usage limit reached|<time>`, ChatGPT's
 `resets_at`), the reset of a window magpie last read as used up (98%, 100%
 In order), the vendor's `Retry-After` or rate-limit reset header (an hour
-at most), else 15 minutes. It is never longer than 8 days. The account's
+at most), else 15 minutes. A key's provider can rest longer of its own:
+`magpie provider quota-rest <id> 6h`, or `until 08:00` for an allowance
+that comes back at a time of day (`until 00:00+08:00` on the vendor's
+clock). Its own rest stands over a `Retry-After` that asked for more than
+the hour. It is never longer than 8 days. The account's
 windows are read again right away, and once a reading finds the window it
 filled started again (for Claude, a new `/usage`; for any subscription,
 its reset gone by), it is back at once, not at the time the refusal
@@ -1381,7 +1385,9 @@ the account for as long as the vendor asks (an hour at most), or a
 minute, doubled each time it comes back right after its rest, up to 30
 minutes. Out of credit rests half an hour. Any other failure rests a minute, longer each time it fails
 again, up to 10 minutes; a subscription that fails with a window used up
-rests until that window renews.
+rests until that window renews. `magpie provider rest-cap <id> 4h` moves
+both of those caps, 30 and 10 minutes, for one provider's keys and
+accounts, up to 8 days; `default` gives them back.
 
 **When the safety filter refuses.** A reply the vendor's safety filter
 refuses before any of it is said rests nobody: it is about what was asked,
@@ -1978,7 +1984,12 @@ especially when the proxy reaches magpie over loopback.
 For the browser UI run the image with `magpie web --addr 0.0.0.0:3430 --no-open`
 in place of the default `serve`, and open
 `http://localhost:3430/?k=<key from docker logs magpie>` (set `MAGPIE_WEB_KEY`
-to keep one key across restarts). There you add providers, sign in to
+to keep one key across restarts; a browser then stays signed in for 400
+days). A browser keeps cookies per host, not per port, so another service on
+the same address can take the sign-in away: by clearing its site data, or by
+filling the host's cookie limit (the sign-in is the last Chrome drops). A page
+opened without it, such as a bookmark, says why it was turned away and takes
+the key in a field, then comes back to the same page. There you add providers, sign in to
 subscriptions and import sign-ins from a file. The vendor sends a sign-in's
 browser back to `localhost` (ChatGPT to `http://localhost:1455/auth/callback?code=…`),
 which is your own machine, not the container, so that page won't load: copy
@@ -2468,20 +2479,80 @@ MAGPIE_GITHUB_MIRROR=https://gh.example magpie serve
 
 ## Files
 
-- `~/.config/magpie/profiles.json` — saved profiles
-- `~/.config/magpie/providers.json` — your providers, keys included (0600)
-- `~/.config/magpie/stash.json` — values magpie replaced, restored on switch-back
-- `~/.config/magpie/plugins.json`, `plugins/` — the plugins added, and their packages
-- `~/.config/magpie/plugin-auth.json` — the plugins' sign-ins (0600)
-- `~/.config/magpie/install-id`, `stats-sent` — the [user count](#counting-users)'s
+magpie's folder, `~/.config/magpie`, is kept flat on purpose: backups,
+sync, Docker volume mounts and older magpies all find each file by its
+name there (#2028). Below, each file says what it is for. A `.lock`
+beside a file is held while it is written, across magpies; a `.bak` is
+the copy made before a write.
+
+What you set:
+
+- `settings.json` — Settings
+- `providers.json` — your providers, keys included (0600)
+- `profiles.json` — saved profiles
+- `library.json`, `library/` — the library: its instructions, skills, MCP
+  servers and hooks, and the agents each goes to
+- `plugins.json`, `plugins/` — the plugins added, and their packages
+- `plugins.yml` — which built-in plugins are on, and each one's config
+- `caller-keys.json` — the gateway keys you made for other callers (0600)
+
+Accounts and sign-ins:
+
+- `logins.json` — the subscription accounts signed in through magpie
+  (0600)
+- `plugin-auth.json` — the plugins' sign-ins (0600)
+- `mcp-signins.json` — sign-ins to MCP servers (0600)
+- `cli-identity.json` — who an agent's own CLI last said was signed in
+  (`cursor-agent about`), so a start doesn't wait for the CLIs
+- `redact.key` — the key behind the placeholders privacy masking puts in
+  place of what it hides
+
+What magpie set on your agents:
+
+- `stash.json` — values magpie replaced, restored on switch-back
+- `applied.json` — what magpie last set on each agent, and when
+- `migrations.json` — which subscriptions moved to their plugin
+  ([Built-in subscriptions that a plugin serves](../AGENTS.md))
+
+The gateway and usage:
+
+- `usage.jsonl` — one line per request: the Usage page's numbers
+- `routing/` — each day's routing attempts (`<date>.jsonl`), the Routing
+  page's history
+- `affinity.json` — which key or account answered each conversation, so a
+  restart keeps it there while the vendor has it cached
+- `served.json` — when each account and key last answered
+- `quotas.json` — the last allowance each account reported
+- `quota-history.json`, `balance-history.json` — allowance and balance
+  readings over time, for the Usage page's charts
+- `usage-alerts.json` — the usage alerts already shown, so a restart
+  doesn't show them again
+- `client-shapes.json` — the headers the gateway last let through for each
+  client, for a test from the CLI
+- `gateway-sessions-hidden.json` — gateway sessions you deleted
+
+Kept for the window:
+
+- `icons/` — providers' icons, fetched once
+- `plugin-icons.json`, `plugin-providers.json`, `plugin-updates.json` —
+  plugins' icons, the providers each serves, and what the last look at
+  npm found for them (updates waiting, and the ones made)
+- `trash/` — deleted sessions, until you empty it or restore them
+- `last-version`, `whatsnew-quiet-day` — the version that ran last, for
+  What's new, and the day you said not to show it again
+- `start-menu-shortcut` — the Start menu shortcut was made (Windows)
+- `install-id`, `stats-sent` — the [user count](#counting-users)'s
   random id and the last day it went
-- `~/.cache/magpie/bun/<version>/magpie-bun` — the Bun plugins run on, named
+
+In `~/.cache/magpie`:
+
+- `bun/<version>/magpie-bun` — the Bun plugins run on, named
   so that a proxy app's PROCESS-NAME rule can match it (`magpie-bun.exe` on
   Windows)
-- `~/.cache/magpie/models.json` — models.dev catalog (OpenCode's cache at
+- `models.json` — models.dev catalog (OpenCode's cache at
   `~/.cache/opencode/models.json` is used when present)
-- `~/.cache/magpie/models/<provider>.json` — model lists fetched from vendors
-- `~/.cache/magpie/partner-counts.json` — partner counts not yet sent (at most
+- `models/<provider>.json` — model lists fetched from vendors
+- `partner-counts.json` — partner counts not yet sent (at most
   14 days)
 
 `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` are respected.

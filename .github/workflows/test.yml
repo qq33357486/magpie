@@ -21,12 +21,11 @@ jobs:
     name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
+      # the fork's branch runs the suite where it deploys — linux alone;
+      # main keeps the upstream baseline of all three
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ github.ref_name == 'codex-images' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
-    # the fork's branch runs the suite where it deploys (linux); main keeps
-    # the upstream baseline of all three
-    if: github.ref_name != 'codex-images' || matrix.os == 'ubuntu-latest'
 
     steps:
       - uses: actions/checkout@v4

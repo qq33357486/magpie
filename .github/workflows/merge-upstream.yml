@@ -1,0 +1,74 @@
+name: Merge upstream
+
+# Every night, upstream's main is merged into codex-images: a clean merge
+# that builds and tests green is pushed (Docker then builds the image); a
+# conflict or a red test opens an issue for a hand to sort it instead.
+
+on:
+  schedule:
+    - cron: '0 19 * * *' # 03:00 Asia/Shanghai
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: merge-upstream
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: codex-images
+          fetch-depth: 0
+
+      - name: Merge upstream/main
+        id: merge
+        run: |
+          git config user.name "merge-upstream-bot"
+          git config user.email "noreply@users.noreply.github.com"
+          git remote add upstream https://github.com/yetone/magpie.git
+          git fetch upstream main
+          before=$(git rev-parse HEAD)
+          if git merge upstream/main --no-edit; then
+            if [ "$(git rev-parse HEAD)" = "$before" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            git merge --abort || true
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open an issue on conflict
+        if: steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "upstream conflicts with codex-images" \
+            --body "The nightly merge of upstream/main into codex-images hit conflicts. Resolve by hand: merge upstream/main locally, fix, push." || true
+
+      - uses: actions/setup-go@v6
+        if: steps.merge.outputs.changed == 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        if: steps.merge.outputs.changed == 'true'
+        run: go test ./internal/gateway/ -count=1
+
+      - name: Push
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin codex-images
+
+      - name: Open an issue on red tests
+        if: failure() && steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "upstream merge broke codex-images tests" \
+            --body "The nightly merge built but the gateway tests failed (run ${{ github.run_number }}); it was NOT pushed. See the run log." || true

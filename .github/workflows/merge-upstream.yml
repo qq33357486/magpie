@@ -52,14 +52,23 @@ jobs:
           gh issue create --title "upstream conflicts with codex-images" \
             --body "The nightly merge of upstream/main into codex-images hit conflicts. Resolve by hand: merge upstream/main locally, fix, push." || true
 
+      - name: Install GTK and WebKitGTK
+        if: steps.merge.outputs.changed == 'true'
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
       - uses: actions/setup-go@v6
         if: steps.merge.outputs.changed == 'true'
         with:
           go-version-file: go.mod
 
+      # the packages the fork touches and the ones that read its catalogs;
+      # the pushed merge then runs the full suite (test.yml) on its own
       - name: Test
         if: steps.merge.outputs.changed == 'true'
-        run: go test ./internal/gateway/ -count=1
+        run: go test -tags gtk3 ./internal/gateway/ ./internal/agent/ ./internal/gui/ -count=1
 
       - name: Push
         if: steps.merge.outputs.changed == 'true'

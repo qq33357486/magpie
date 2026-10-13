@@ -16,7 +16,10 @@ import (
 // model, as its backend draws the same for any name; Aside's
 // magpie/codex/gpt-image-2.5, picked when magpie offered it, is still
 // taken as that one, not turned away as no image model.
-func TestAsideCodexOneGPTImage(t *testing.T) {
+//
+// This fork lists the tiers beside it (the backend's images API takes the
+// tier by name), so Aside offers each of them.
+func TestAsideCodexGPTImageTiers(t *testing.T) {
 	asideHome(t)
 	claims := func(m map[string]any) string {
 		b, _ := json.Marshal(m)
@@ -35,8 +38,8 @@ func TestAsideCodexOneGPTImage(t *testing.T) {
 			codex = append(codex, o.Value)
 		}
 	}
-	if len(codex) != 1 || codex[0] != "magpie/codex/gpt-image-2" {
-		t.Fatalf("codex image options %v, want only magpie/codex/gpt-image-2", codex)
+	if len(codex) != 4 || codex[0] != "magpie/codex/gpt-image-2" || codex[3] != "magpie/codex/gpt-image-2.5-sunburst" {
+		t.Fatalf("codex image options %v, want the tiers beside magpie/codex/gpt-image-2", codex)
 	}
 	for _, v := range []string{"magpie/codex/gpt-image-2", "magpie/codex/gpt-image-2.5"} {
 		if !asideImageOffered(v) {

@@ -12,10 +12,13 @@ import (
 	"github.com/yetone/magpie/internal/settings"
 )
 
-// #1865: Settings › Images lists a ChatGPT account's one GPT Image, marked
+// #1865: Settings › Images lists a ChatGPT account's GPT Image, marked
 // as the vendor's pick, and a gpt-image-2.5 saved when it was listed shows
 // as that entry while the saved value is kept as it is.
-func TestImageGenCodexOneEntry(t *testing.T) {
+//
+// This fork lists the tiers beside it (the backend's images API takes the
+// tier by name), so Settings offers each of them.
+func TestImageGenCodexTiers(t *testing.T) {
 	h := t.TempDir()
 	t.Setenv("HOME", h)
 	t.Setenv("USERPROFILE", h)
@@ -48,7 +51,7 @@ func TestImageGenCodexOneEntry(t *testing.T) {
 			codex = append(codex, m)
 		}
 	}
-	if len(codex) != 1 || codex[0].ID != "codex/gpt-image-2" || codex[0].Name != "GPT Image" || !codex[0].VendorPicks {
+	if len(codex) != 4 || codex[0].ID != "codex/gpt-image-2" || codex[0].Name != "GPT Image" || !codex[0].VendorPicks || codex[3].ID != "codex/gpt-image-2.5-sunburst" {
 		t.Fatalf("codex image models %+v", codex)
 	}
 	if s.ImageGen != "codex/gpt-image-2.5" || s.ImageGenShown != "codex/gpt-image-2" || s.ImageGenMissing != "" {

@@ -130,8 +130,15 @@ const (
 // (#1865), so listing 2.5 apart said there was a choice where there is
 // none. A gpt-image-2.5 saved when it was listed still draws there
 // (drawsFamily) and shows as this one (ListedDrawer).
+//
+// This fork lists the tiers beside it: the backend's images API takes the
+// tier by name — cli-proxy-api's direct image route sends gpt-image-2.5,
+// -flare and -sunburst there as-is — so each is served as its own model.
 var codexDrawers = []catalog.Model{
 	{ID: "gpt-image-2", Name: "GPT Image", Released: "2026-01-01"},
+	{ID: "gpt-image-2.5", Name: "GPT Image 2.5", Released: "2026-10-01"},
+	{ID: "gpt-image-2.5-flare", Name: "GPT Image 2.5 Flare", Released: "2026-10-01"},
+	{ID: "gpt-image-2.5-sunburst", Name: "GPT Image 2.5 Sunburst", Released: "2026-10-01"},
 }
 
 // VendorPicksDrawer is whether p's vendor picks the image model itself,
@@ -324,6 +331,13 @@ type drawing struct {
 	N      int
 	Images []picture // to edit, or draw from
 	Mask   *picture
+	// Moderation, InputFidelity, OutputCompression and PartialImages are
+	// the images API's own that the ChatGPT backend takes too, passed on
+	// as the caller sent them (codexImageExtras)
+	Moderation        string
+	InputFidelity     string
+	OutputCompression int
+	PartialImages     int
 }
 
 // drawn is what a vendor gave back.
@@ -493,6 +507,9 @@ func readDrawing(r *http.Request) (drawing, error) {
 			return ""
 		}
 		d.Model, d.Prompt, d.Size, d.Quality, d.Background, d.Format, d.Want = get("model"), get("prompt"), get("size"), get("quality"), get("background"), get("output_format"), get("response_format")
+		d.Moderation, d.InputFidelity = get("moderation"), get("input_fidelity")
+		d.OutputCompression, _ = strconv.Atoi(get("output_compression"))
+		d.PartialImages, _ = strconv.Atoi(get("partial_images"))
 		d.N, _ = strconv.Atoi(get("n"))
 		for _, k := range []string{"image", "image[]"} {
 			for _, fh := range f.File[k] {
@@ -527,11 +544,16 @@ func readDrawing(r *http.Request) (drawing, error) {
 			Images         json.RawMessage `json:"images"`
 			Mask           json.RawMessage `json:"mask"`
 			ResponseFormat string          `json:"response_format"`
+			Moderation     string          `json:"moderation"`
+			InputFidelity  string          `json:"input_fidelity"`
+			OutCompression int             `json:"output_compression"`
+			PartialImgs    int             `json:"partial_images"`
 		}
 		if err := json.Unmarshal(body, &in); err != nil {
 			return d, fmt.Errorf("the request isn't JSON: %v", err)
 		}
-		d = drawing{Model: in.Model, Prompt: in.Prompt, Size: in.Size, Quality: in.Quality, Background: in.Background, Format: in.Format, Want: strings.TrimSpace(in.ResponseFormat), N: in.N}
+		d = drawing{Model: in.Model, Prompt: in.Prompt, Size: in.Size, Quality: in.Quality, Background: in.Background, Format: in.Format, Want: strings.TrimSpace(in.ResponseFormat), N: in.N,
+			Moderation: in.Moderation, InputFidelity: in.InputFidelity, OutputCompression: in.OutCompression, PartialImages: in.PartialImgs}
 		for _, raw := range []json.RawMessage{in.Image, in.Images} {
 			for _, src := range imageSources(raw) {
 				pic, err := pictureOf(src)
@@ -723,6 +745,14 @@ func (s *Server) drawOnAccounts(ctx context.Context, r *http.Request, p provider
 		cs = []candidate{{p: p, model: model, rest: p.ID}}
 	}
 	cs = probeOne(cs) // of those resting, only the one back soonest (#1799)
+	// the drawing lane's own order: the accounts whose images can draw, in
+	// turns, ahead of any whose lane is cooling — and none to ask when
+	// every lane is, the earliest back in the Retry-After
+	if ready, cooling, back := drawLaneOrder(cs); len(ready) == 0 && len(cooling) > 0 {
+		return p, drawn{}, http.StatusTooManyRequests, back, fmt.Errorf("every account's image quota is spent for now: the first is back in %s", time.Until(back).Round(time.Second))
+	} else if len(ready) > 0 {
+		cs = append(ready, cooling...)
+	}
 	var out drawn
 	var code int
 	var err error
@@ -1009,6 +1039,9 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 				req[k] = v
 			}
 		}
+		if drawsCodex(p) {
+			codexImageExtras(req, d, false)
+		}
 		// only dall-e gives a URL unless asked; gpt-image turns the field away
 		if strings.Contains(m, "dall-e") {
 			req["response_format"] = "b64_json"
@@ -1023,6 +1056,7 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 				req[k] = v
 			}
 		}
+		codexImageExtras(req, d, true)
 		var imgs []map[string]string
 		for _, pic := range d.Images {
 			imgs = append(imgs, map[string]string{"image_url": pic.dataURL()})
@@ -1075,6 +1109,11 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 	}
 	b, code, err := s.send(ctx, p, url, ct, body, true)
 	if err != nil {
+		if drawsCodex(p) && code == http.StatusTooManyRequests {
+			// the refusal is of images alone: only this account's drawing
+			// sits out, until the reset the vendor named or a plain while
+			benchedDrawing(p, b)
+		}
 		return drawn{}, code, err
 	}
 	return readImagesAnswer(p, url, b, code)

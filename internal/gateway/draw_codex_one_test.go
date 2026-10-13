@@ -20,7 +20,11 @@ import (
 // saved when magpie listed it is kept as saved, still draws there, and
 // stands for that one entry. An API key's gpt-image-2.5, where the model
 // field matters, is listed and kept as it is.
-func TestCodexListsOneGPTImage(t *testing.T) {
+//
+// This fork lists the tiers beside it: the backend's images API takes the
+// tier by name (cli-proxy-api's direct image route sends gpt-image-2.5,
+// -flare and -sunburst there as-is), so each is served as its own model.
+func TestCodexListsGPTImageTiers(t *testing.T) {
 	codexSignedIn(t)
 	var mu sync.Mutex
 	var bodies []string
@@ -54,8 +58,8 @@ func TestCodexListsOneGPTImage(t *testing.T) {
 			t.Errorf("VendorPicksDrawer(%s) = %v", p.ID, VendorPicksDrawer(p))
 		}
 	}
-	if strings.Join(listed["codex"], ",") != "gpt-image-2" {
-		t.Fatalf("codex lists %v, want only gpt-image-2", listed["codex"])
+	if want := "gpt-image-2,gpt-image-2.5,gpt-image-2.5-flare,gpt-image-2.5-sunburst"; strings.Join(listed["codex"], ",") != want {
+		t.Fatalf("codex lists %v, want %s", listed["codex"], want)
 	}
 	if strings.Join(listed["openai"], ",") != "gpt-image-2,gpt-image-2.5" {
 		t.Fatalf("an API key lists %v, want gpt-image-2 and gpt-image-2.5", listed["openai"])

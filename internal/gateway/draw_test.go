@@ -420,10 +420,10 @@ func TestCodexAccountDraws(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if paths[0] != "/backend-api/codex/images/generations" || !strings.Contains(bodies[0], `"model":"gpt-image-2"`) {
+	if paths[0] != "/backend-api/codex/images/generations" || !strings.Contains(bodies[0], `"model":"gpt-image-2"`) || !strings.Contains(bodies[0], `"stream":true`) {
 		t.Fatalf("asked %v %v", paths, bodies)
 	}
-	if head.Get("chatgpt-account-id") != "acct-1" || head.Get("Accept") != "application/json" || head.Get("originator") != "codex_cli_rs" || head.Get("x-codex-imagegen-request-id") == "" || head.Get("x-codex-image-turn-id") == "" {
+	if head.Get("chatgpt-account-id") != "acct-1" || head.Get("Accept") != "text/event-stream" || head.Get("originator") != "codex_cli_rs" || head.Get("x-codex-imagegen-request-id") == "" || head.Get("x-codex-image-turn-id") == "" {
 		t.Fatalf("headers %v", head)
 	}
 	// an edit goes as JSON, the image a data URL: the backend turns multipart away
@@ -433,6 +433,45 @@ func TestCodexAccountDraws(t *testing.T) {
 	mu.Lock()
 	if code != 200 || paths[1] != "/backend-api/codex/images/edits" || head.Get("Content-Type") != "application/json" || !strings.Contains(bodies[1], `"images":[{"image_url":"data:image/png;base64,`) {
 		t.Fatalf("%d %s; asked %v %s", code, raw, paths, head.Get("Content-Type"))
+	}
+}
+
+// The ask goes streamed — a connection sitting silent the whole while a
+// generation draws is cut through an account's proxy (2026-10-14) — and
+// the stream's completed events answer the same as the JSON did: the
+// image, and the usage the event named.
+func TestCodexDrawStreams(t *testing.T) {
+	codexSignedIn(t)
+	var mu sync.Mutex
+	var head http.Header
+	var body string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		head, body = r.Header.Clone(), string(b)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: image_generation.partial_image\n"+
+			`data: {"type":"image_generation.partial_image","partial_image_index":0,"b64_json":"cGFydGlhbA=="}`+"\n\n"+
+			"event: image_generation.completed\n"+
+			`data: {"type":"image_generation.completed","b64_json":"`+base64.StdEncoding.EncodeToString(pngBytes)+`","usage":{"input_tokens":9,"output_tokens":217}}`+"\n\n"+
+			"data: [DONE]\n\n")
+	}))
+	defer up.Close()
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	defer func() { provider.CodexBase = was }()
+	code, a, raw := postImages(t, New(), "/v1/images/generations", "application/json", `{"model":"codex/gpt-image-2","prompt":"a magpie"}`)
+	if code != 200 || len(a.Data) != 1 || a.Data[0].B64 != base64.StdEncoding.EncodeToString(pngBytes) || a.Usage.Input != 9 || a.Usage.Output != 217 {
+		t.Fatalf("%d %s %v %d/%d", code, raw, a.Data, a.Usage.Input, a.Usage.Output)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(body, `"stream":true`) {
+		t.Fatalf("asked %s", body)
+	}
+	if head.Get("Accept") != "text/event-stream" {
+		t.Fatalf("headers %v", head)
 	}
 }
 

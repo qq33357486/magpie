@@ -157,6 +157,7 @@ type subscriptionRun struct {
 	pending  map[string]chan mcpToolResult
 	closed   bool
 	resuming bool // a tool-result request owns this run until its segment ends
+	kept     bool // its reply was ended from a stream cut short, what Claude Code went on to answer left unheard
 	stderr   strings.Builder
 
 	// Only one settings update is in flight; it must be acknowledged before
@@ -1185,6 +1186,13 @@ func (b *subscriptionBridge) retire(owner string, msgs []Message) {
 // asked for nothing more waits for the conversation's next turn; one that
 // failed, was cut short or went unheard is let go, as is a one-off ask.
 func (r *subscriptionRun) ended(req *Request, said, stop string, ok bool) {
+	if r.wasKept() {
+		// its reply was kept from a stream cut short: what Claude Code
+		// went on to answer stayed with it, so the client's next turn is
+		// told the half it has, to a new run
+		r.abortFor("its reply was kept from a stream cut short")
+		return
+	}
 	// the turn's reply is over: nothing after it is taken back to before
 	// it (letGo). A reply that calls tools hasn't ended the turn: the
 	// client's results go on with it, and a client that goes away during
@@ -1966,6 +1974,16 @@ func (r *subscriptionRun) endSegment() {
 	}
 }
 
+// wasKept says its reply was ended from a stream cut short with what the
+// client was shown: what Claude Code went on to answer stayed with it, so
+// the run can't serve the next turn, its own talk another answer than the
+// client's.
+func (r *subscriptionRun) wasKept() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.kept
+}
+
 func (r *subscriptionRun) readOutput(rd io.Reader) {
 	s := bufio.NewScanner(rd)
 	s.Buffer(make([]byte, 64<<10), 64<<20)
@@ -1998,7 +2016,11 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 	// answers. Taken for the reply's end, it told the client end_turn with
 	// the first attempt's usage (5 tokens out, the thinking so far, no
 	// answer) and ended the run, its next turn writing the whole
-	// conversation to the cache again.
+	// conversation to the cache again. Words already shown, though, can't
+	// go on in the attempt that answers, which writes them again: their
+	// reply is kept, ended with them as a proxy whose bytes are out keeps
+	// them, and what Claude Code goes on to answer is left unheard, the
+	// run let go (kept) — not an error the client pays to ask again.
 	stopped := false // this message's message_delta said why it stopped
 	cut := false     // an attempt was cut short, and Claude Code asks again
 	shown := false   // this message has shown the client words or a call
@@ -2086,6 +2108,9 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 		r.endSegment()
 	}
 	line := func(b []byte) {
+		if r.wasKept() {
+			return // the reply was kept from a cut short stream: what Claude Code goes on to tell answers no one
+		}
 		var envelope struct {
 			Type    string `json:"type"`
 			Subtype string `json:"subtype"`
@@ -2374,10 +2399,22 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 		case "message_stop":
 			switch {
 			case inside:
+			case !stopped && shown && !theirs:
+				// what the client was shown can't be taken back, nor the
+				// attempt's answer added to it: the reply is kept, ended
+				// well enough for the client to go on with what it has —
+				// a proxy whose bytes are out doesn't take them back with
+				// an error the client pays to ask again. What Claude Code
+				// goes on to answer is left unheard (kept), the run let
+				// go once the reply ends
+				r.mu.Lock()
+				r.kept = true
+				r.mu.Unlock()
+				r.emit(Event{Kind: KStop, Stop: stopFromAnthropic("end_turn")})
+				r.endSegment()
 			case !stopped && shown:
-				// what the client was shown can't be taken back, nor
-				// the attempt's answer added to it: Claude Code's own
-				// request is the client's to make again
+				// a tool call half shown can't be answered by an end_turn:
+				// the client would run what it never heard whole
 				failed("after the reply had begun")
 			case !stopped:
 				cut = true

@@ -180,14 +180,61 @@ func TestClaudeCutStreamWithNoAnswer(t *testing.T) {
 }
 
 // A stream cut short after words were shown can't go on in the next
-// attempt, which writes its answer again: the reply fails instead, for the
-// client to ask again.
+// attempt, which writes its answer again: the reply is kept — the client
+// is told what it was shown, well ended — instead of failing the turn for
+// it to pay to ask again.
 func TestClaudeCutStreamAfterWords(t *testing.T) {
 	lines := []string{
 		cutStart,
 		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
 		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half an ans"}}}`,
 		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+		`{"type":"stream_event","event":{"type":"message_stop"}}`,
+	}
+	text, stop, _, _, raw, ended, ok := claudeReply(t, &subscriptionRun{}, lines, true)
+	if text != "half an ans" || stop != "end_turn" || ended != "stop" || !ok || strings.Contains(raw, "cut short") {
+		t.Fatalf("reply %q stop %q, run ended %q %v:\n%s", text, stop, ended, ok, raw)
+	}
+}
+
+// What Claude Code goes on to answer after a kept reply is left unheard:
+// nothing of it reaches the client, whose next turn is told the half it
+// has, to a new run.
+func TestClaudeCutStreamKeptRetryUnheard(t *testing.T) {
+	lines := []string{
+		cutStart,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half an ans"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+		`{"type":"stream_event","event":{"type":"message_stop"}}`,
+		`{"type":"assistant","message":{"id":"msg_cut","model":"claude-opus-5-5","content":[{"type":"text","text":"half an ans"}],"stop_reason":null,"usage":{"output_tokens":5}}}`,
+		`{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":500,"error_status":null,"error":"unknown"}`,
+		`{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_retry","model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_read_input_tokens":467708,"output_tokens":5}}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the whole answer again"}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12000}}}`,
+		`{"type":"stream_event","event":{"type":"message_stop"}}`,
+		`{"type":"result","subtype":"success","is_error":false,"result":"the whole answer again"}`,
+	}
+	text, stop, _, _, raw, ended, ok := claudeReply(t, &subscriptionRun{}, lines, true)
+	if text != "half an ans" || stop != "end_turn" || ended != "stop" || !ok {
+		t.Fatalf("reply %q stop %q, run ended %q %v:\n%s", text, stop, ended, ok, raw)
+	}
+	if strings.Contains(raw, "whole answer") {
+		t.Fatalf("the retry's answer was heard:\n%s", raw)
+	}
+}
+
+// A tool call half shown is not kept: the client would be told to run what
+// it never heard whole. The reply fails, for the client to ask again.
+func TestClaudeCutStreamAfterAToolCallBegun(t *testing.T) {
+	lines := []string{
+		cutStart,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"let me read"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_a","name":"mcp__magpie__Read","input":{}}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"p\":1"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":1}}`,
 		`{"type":"stream_event","event":{"type":"message_stop"}}`,
 	}
 	_, stop, _, _, raw, _, ok := claudeReply(t, &subscriptionRun{}, lines, true)

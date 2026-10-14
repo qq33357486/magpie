@@ -976,9 +976,9 @@ func (s *Server) sendWith(ctx context.Context, p provider.Provider, method, url,
 			return nil, 502, err
 		}
 		if drawsCodex(p) {
-			// the images API answers in JSON, not the stream Codex's
-			// signing asks of its Responses; the id is Codex CLI's own
-			req.Header.Set("Accept", "application/json")
+			// the ask goes with stream (draw_stream.go), that an answer
+			// drawing over a proxy isn't cut silent; the id is Codex CLI's
+			req.Header.Set("Accept", "text/event-stream")
 			req.Header.Set("x-codex-imagegen-request-id", newUUID())
 			req.Header.Set("x-codex-image-turn-id", newUUID())
 		}
@@ -1143,6 +1143,7 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		}
 		if drawsCodex(p) {
 			codexImageExtras(req, d, false)
+			req["stream"] = true
 		}
 		// only dall-e gives a URL unless asked; gpt-image turns the field away
 		if strings.Contains(m, "dall-e") {
@@ -1159,6 +1160,7 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 			}
 		}
 		codexImageExtras(req, d, true)
+		req["stream"] = true
 		var imgs []map[string]string
 		for _, pic := range d.Images {
 			imgs = append(imgs, map[string]string{"image_url": pic.dataURL()})
@@ -1217,6 +1219,9 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 			benchedDrawing(p, b)
 		}
 		return drawn{}, code, err
+	}
+	if drawsCodex(p) {
+		b = imagesAnswerOfStream(b)
 	}
 	return readImagesAnswer(p, url, b, code)
 }

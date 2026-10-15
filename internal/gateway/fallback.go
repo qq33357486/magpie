@@ -1318,6 +1318,16 @@ type holdWriter struct {
 	failMsg    string
 	sharedPool bool // an OpenRouter upstream pool rejected this attempt
 
+	// cutBody: this try never reached the vendor (writeCut — the gateway's
+	// own connection failed before a reply began). The failure's own class,
+	// 502 with the connection error's words, is what code(), errBody() and
+	// rest read on; what the agent is told instead, when the held error is
+	// released (or as the stream's error under a keepalive), is 504, in
+	// Chinese, no provider named — a relay in front (new-api) sends a 504
+	// straight back to the agent rather than over to another provider, so
+	// the agent's own retry comes here again
+	cutBody []byte
+
 	// turnedAway: the account is asked with the system prompt Antigravity
 	// answers with a 429 whatever quota it has left — Claude Code's, its
 	// Agent SDK's — so the account isn't at fault and doesn't rest (#666)
@@ -2005,8 +2015,14 @@ func (h *holdWriter) release() {
 			who := cmp.Or(h.header.Get(providerHeader), "the provider")
 			streamError(h.w, h.alive.proto, h.failure, who+" "+h.failMsg)
 		case h.status >= 400:
-			// an error status, once the agent has a stream: told as its error
-			streamError(h.w, h.alive.proto, h.status, provider.APIError(h.held.Bytes(), http.StatusText(h.status)))
+			// an error status, once the agent has the stream: told as its error
+			if h.cutBody != nil {
+				// a connection that died before the reply began (writeCut):
+				// told 504, in Chinese, not as the held 502 and its words
+				streamError(h.w, h.alive.proto, http.StatusGatewayTimeout, cutToldNoConn)
+			} else {
+				streamError(h.w, h.alive.proto, h.status, provider.APIError(h.held.Bytes(), http.StatusText(h.status)))
+			}
 		default:
 			// a reply given whole by a vendor that ignored stream:true,
 			// after the agent was kept alive: sent as the stream it asked
@@ -2014,6 +2030,13 @@ func (h *holdWriter) release() {
 			wholeAsStream(h.w, h.alive.proto, h.held.Bytes())
 		}
 		return
+	}
+	if h.cutBody != nil {
+		// writeCut: the agent is told 504, in Chinese; the class was read
+		// as the held 502 before this, off code() and errBody()
+		h.status = http.StatusGatewayTimeout
+		h.held.Reset()
+		h.held.Write(h.cutBody)
 	}
 	h.pass()
 	h.w.Write(h.held.Bytes())

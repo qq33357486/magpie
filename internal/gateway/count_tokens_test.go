@@ -240,8 +240,10 @@ func TestCountTokensTransportError(t *testing.T) {
 		Type  string
 		Error struct{ Type, Message string }
 	}
-	if err := json.Unmarshal([]byte(body), &result); err != nil || code != 502 || result.Type != "error" ||
-		result.Error.Type != "api_error" || !strings.Contains(result.Error.Message, "dial") {
+	// a dead connection is told 504, in Chinese (writeCut); the dial error
+	// itself is the log's
+	if err := json.Unmarshal([]byte(body), &result); err != nil || code != 504 || result.Type != "error" ||
+		result.Error.Type != "api_error" || result.Error.Message != cutToldNoConn {
 		t.Fatalf("transport error: %d %s (decode: %v)", code, body, err)
 	}
 }
@@ -335,14 +337,15 @@ func TestCountTokensTransportFailover(t *testing.T) {
 				var result struct {
 					Error struct{ Type, Message string }
 				}
-				message := "last connection broke"
 				if outcome == "canceled" {
-					message = "context canceled"
 					if s.resting(p.ID + "#" + provider.KeyID("first")) {
 						t.Fatal("client cancellation rested a key")
 					}
 				}
-				if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || rec.Code != 502 || result.Error.Type != "api_error" || !strings.Contains(result.Error.Message, message) {
+				// a dead connection is told 504, in Chinese (writeCut); its
+				// own words — "last connection broke", "context canceled" —
+				// are the log's
+				if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || rec.Code != 504 || result.Error.Type != "api_error" || result.Error.Message != cutToldNoConn {
 					t.Fatalf("transport error: %d %s (decode: %v)", rec.Code, rec.Body, err)
 				}
 			}

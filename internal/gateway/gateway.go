@@ -1141,7 +1141,7 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
 					continue
 				}
 			}
-			writeError(w, provider.Anthropic, 502, err.Error())
+			writeCut(w, provider.Anthropic, c.p.Name, err)
 			return
 		}
 		if res.StatusCode >= 400 {
@@ -3728,7 +3728,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	}
 	res, err := s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header)
 	if err != nil {
-		return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+		return writeCut(w, proto, p.Name, err), err.Error(), true
 	}
 	// a vendor that turns away the fields it doesn't know (Mistral's
 	// extra_forbidden for OpenCode's store, #393) is asked again without
@@ -3755,7 +3755,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, prefillRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+					return writeCut(w, proto, p.Name, err), err.Error(), true
 				}
 				continue
 			}
@@ -3767,7 +3767,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, rootUnionRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+					return writeCut(w, proto, p.Name, err), err.Error(), true
 				}
 				continue
 			}
@@ -3779,7 +3779,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, toolStrictRefused)
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+					return writeCut(w, proto, p.Name, err), err.Error(), true
 				}
 				continue
 			}
@@ -3793,7 +3793,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, reasoningTextRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+					return writeCut(w, proto, p.Name, err), err.Error(), true
 				}
 				continue
 			}
@@ -3811,7 +3811,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, bareReasoningRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+					return writeCut(w, proto, p.Name, err), err.Error(), true
 				}
 				continue
 			}
@@ -3825,7 +3825,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, itemIDsRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+					return writeCut(w, proto, p.Name, err), err.Error(), true
 				}
 				continue
 			}
@@ -3844,7 +3844,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			refused = append(refused, imageToolRefused)
 			body = nb
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+				return writeCut(w, proto, p.Name, err), err.Error(), true
 			}
 			continue
 		}
@@ -3855,7 +3855,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		}
 		body = withoutMessageReasoning(body, ms)
 		if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-			return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+			return writeCut(w, proto, p.Name, err), err.Error(), true
 		}
 	}
 	if res.StatusCode < 400 {
@@ -3880,12 +3880,12 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			}
 			s.markUnfit(p.ID, refused, proto)
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(withBodyEffort(proto, body, onEffort(p, model))), r.Header); err != nil {
-				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+				return writeCut(w, proto, p.Name, err), err.Error(), true
 			}
 		} else if proto == provider.Chat && mandatoryReasoning.Match(b) {
 			if nb, ok := withoutReasoningOff(body); ok {
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
-					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+					return writeCut(w, proto, p.Name, err), err.Error(), true
 				}
 			}
 		}
@@ -3898,7 +3898,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		res.Body = io.NopCloser(bytes.NewReader(b))
 		if toolsWithoutEffort.Match(b) && !s.servesElsewhere(p, model, proto) {
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(withBodyEffort(proto, body, "none")), r.Header); err != nil {
-				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+				return writeCut(w, proto, p.Name, err), err.Error(), true
 			}
 		}
 	}
@@ -3912,18 +3912,18 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// between_tools in place of disabled (#1454)
 		if nb, ok := withBetweenTools(body); ok && asksBetweenTools.Match(b) {
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
-				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+				return writeCut(w, proto, p.Name, err), err.Error(), true
 			}
 		} else if nb, ok := withoutThinkingOff(body); ok && refusesThinkingOff(b) {
 			s.markUnfit(p.ID, offRefused(model), proto)
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
-				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+				return writeCut(w, proto, p.Name, err), err.Error(), true
 			}
 		} else if nb, ok := withoutSampling(body); ok && samplingDeprecated.Match(b) {
 			// a Claude by a name samplingAsTaken doesn't know refusing
 			// temperature, top_p or top_k (#1454)
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
-				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+				return writeCut(w, proto, p.Name, err), err.Error(), true
 			}
 		}
 	}
@@ -4093,15 +4093,17 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// stream may end without [DONE] and be whole, so only a read that
 		// failed counts there; a Gemini one ends on a candidate's
 		// finishReason (#1644).
-		var failed string
+		var failed, told string
 		switch {
 		case rerr != nil && rerr != io.EOF:
 			failed = cutMidReply(p.Name, rerr)
+			told = cutToldMid
 		case proto == provider.Anthropic || proto == provider.Responses || proto == provider.Gemini:
 			failed = p.Name + ": the reply ended before it was complete"
+			told = cutToldShort
 		}
 		if failed != "" {
-			w.Write(streamFailure(proto, failed))
+			w.Write(streamFailure(proto, told))
 			if f != nil {
 				f.Flush()
 			}
@@ -4118,6 +4120,16 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 func cutMidReply(name string, err error) string {
 	return name + ": connection lost mid-reply (" + err.Error() + ")"
 }
+
+// cutTold is what a customer is told of a cut, in Chinese, no provider
+// named (057da9c2's rules): which provider lost the connection, and why,
+// are the log's to hold. The failure's own words — cutMidReply's, the
+// ended-short's — are what routing and the failure's class read on.
+const (
+	cutToldNoConn = "模型服务暂时无法连接，请稍后重试"
+	cutToldMid    = "回复中途连接中断，请重试"
+	cutToldShort  = "回复提前结束，请重试"
+)
 
 // streamFailure is an error event ending a stream in proto, as each
 // protocol's own server sends one mid-reply.
@@ -5867,6 +5879,44 @@ var (
 func toldOutside(msg string) string {
 	msg = outsideEmail.ReplaceAllString(msg, "***@***")
 	return outsideStack.ReplaceAllString(msg, "the gateway$1")
+}
+
+// writeCut answers the agent whose request never reached the vendor: the
+// gateway's own connection to it failed before a reply began. The agent is
+// told 504, in Chinese, no provider named — a relay in front of this one
+// (new-api) sends a 504 straight back to the agent rather than over to
+// another provider (504 is in its never-retry set), so the agent's own
+// retry comes here again; the details stay in the log. The failure's own
+// class — 502, the connection error and its words — is what routing, rest
+// and the failure's class read on, unchanged: where the reply is held for
+// another candidate to answer, the 502 and the error's words are held as
+// they were (code(), errBody()) and the 504 is said only when the held
+// error is released (holdWriter.release); where nothing is held, and for a
+// count, it is said at once.
+func writeCut(w http.ResponseWriter, proto provider.Protocol, name string, err error) int {
+	log.Printf("gateway: %s: no connection to the vendor: %v", name, err)
+	if hw, ok := w.(*holdWriter); ok && hw.hold {
+		hw.cutBody = cutBodyOf(proto)
+		return writeError(w, proto, http.StatusBadGateway, name+": "+err.Error())
+	}
+	writeError(w, proto, http.StatusGatewayTimeout, cutToldNoConn)
+	return http.StatusBadGateway
+}
+
+// cutBodyOf is the 504 error body writeCut's answer goes to the agent as,
+// in the protocol's own shape, as writeError builds one.
+func cutBodyOf(proto provider.Protocol) []byte {
+	var v any
+	switch proto {
+	case provider.Anthropic:
+		v = map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": cutToldNoConn}}
+	case provider.Gemini:
+		v = map[string]any{"error": map[string]any{"code": http.StatusGatewayTimeout, "message": cutToldNoConn, "status": "UNAVAILABLE"}}
+	default:
+		v = map[string]any{"error": map[string]any{"message": cutToldNoConn, "type": "api_error", "code": nil, "param": nil}}
+	}
+	b, _ := json.Marshal(v)
+	return b
 }
 
 // writeError answers in the client's own error shape.

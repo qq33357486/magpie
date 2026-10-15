@@ -563,12 +563,15 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 		case <-r.Context().Done():
 		}
 	}
+	var cutTold string
 	if serr != nil && failed == "" {
 		// the upstream died mid-reply: say so in the client's own
 		// protocol instead of finishing as if all went well
 		failed = cutMidReply(p.Name, serr)
+		cutTold = cutToldMid
 		if errors.Is(serr, errEndedShort) {
 			failed = p.Name + ": " + errEndedShort.Error()
+			cutTold = cutToldShort
 		}
 	}
 	if failed != "" && markAntigravityRefused(w, p, request.System, failed) {
@@ -579,7 +582,14 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 		u.ErrType = turnedAwayErrType
 	}
 	if !errSent {
-		enc.event(Event{Kind: KError, Text: failed, Code: failedCode})
+		// a cut is told in Chinese, no provider named (cutTold, per
+		// 057da9c2's rules); any other failure's words are the
+		// customer's too, as they were
+		told := failed
+		if cutTold != "" {
+			told = cutTold
+		}
+		enc.event(Event{Kind: KError, Text: told, Code: failedCode})
 	}
 	return 200, failed
 }

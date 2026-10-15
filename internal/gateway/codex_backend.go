@@ -43,8 +43,8 @@ var codexAPIBase = "https://api.openai.com/v1"
 // the stack by; legacyMagpieCompaction is the one it wrote before, read
 // still so a conversation held over an upgrade keeps working.
 const (
-	magpieCompaction        = "gw1:"
-	legacyMagpieCompaction  = "magpie1:"
+	magpieCompaction       = "gw1:"
+	legacyMagpieCompaction = "magpie1:"
 )
 
 var nativeSealedAgentPayload = regexp.MustCompile(`^gAAAAA[A-Za-z0-9_-]+={0,2}$`)

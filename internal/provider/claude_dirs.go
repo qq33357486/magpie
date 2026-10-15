@@ -306,7 +306,9 @@ func claudeStandIn(ls []savedLogin) string {
 // claudeLogoutLapse is why the account Claude Code was signed in to can't
 // be used once Claude Code let go of it: logged out, which revokes the
 // sign-in it held, or emptied that sign-in once Anthropic refused it.
-const claudeLogoutLapse = "Claude Code is no longer signed in; sign in again in magpie"
+// Like claudeAuthLapse, it is read back out of error bodies — no word in
+// it may be one the reply masking would change.
+const claudeLogoutLapse = "Claude Code is no longer signed in; it needs signing in again"
 
 // legacyClaudeLogoutLapse is claudeLogoutLapse as magpie wrote it before,
 // which took every such lapse for a /logout.

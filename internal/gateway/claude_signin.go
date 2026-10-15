@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -113,9 +114,11 @@ func (w *signInWriter) Write(b []byte) (int, error) {
 
 var xAPIKey = regexp.MustCompile(`(?i)x-api-key`)
 
-// refusedMessage is a provider's refusal of magpie's credential, as a
-// Claude Code signed in to claude.ai is told it: b is magpie's error,
-// "<provider>: <reason>".
+// refusedMessage is a provider's refusal of the gateway's credential, as
+// a Claude Code signed in to claude.ai is told it: the customer is told
+// the service is out; which provider refused, and its words, are the
+// log's to hold. (This write is direct, not through writeError, so no
+// masking picks up after it — the message must be clean as it is made.)
 func refusedMessage(b []byte, id string, code int) string {
 	var e struct {
 		Error struct {
@@ -123,18 +126,8 @@ func refusedMessage(b []byte, id string, code int) string {
 		} `json:"error"`
 	}
 	json.Unmarshal(b, &e)
-	name, reason := id, strings.TrimSpace(e.Error.Message)
-	if i := strings.Index(reason, ": "); i > 0 && i <= 64 && !strings.ContainsAny(reason[:i], "\n{") {
-		name, reason = reason[:i], strings.TrimSpace(reason[i+2:])
-	}
-	if name == "" {
-		name = "The provider"
-	}
-	msg := fmt.Sprintf("%s refused magpie's credential (HTTP %d)", name, code)
-	if reason != "" {
-		msg += ": " + xAPIKey.ReplaceAllString(reason, "API key")
-	}
-	return msg
+	log.Printf("claude: %s refused the credential (HTTP %d): %s", id, code, strings.TrimSpace(e.Error.Message))
+	return fmt.Sprintf("模型服务暂时不可用，请稍后重试")
 }
 
 func (w *signInWriter) Flush() {

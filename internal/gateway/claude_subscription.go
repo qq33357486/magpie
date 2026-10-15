@@ -379,11 +379,11 @@ func claudeWorkDir() (string, error) {
 	case err != nil:
 		return "", err
 	case !fi.IsDir():
-		return "", fmt.Errorf("%s is not a folder", dir)
+		return "", fmt.Errorf("the run's folder is not a folder")
 	case othersCanWrite(fi):
-		return "", fmt.Errorf("%s can be written by others (%v)", dir, fi.Mode().Perm())
+		return "", fmt.Errorf("the run's folder can be written by others (%v)", fi.Mode().Perm())
 	case !ownedByMe(fi):
-		return "", fmt.Errorf("%s belongs to another user", dir)
+		return "", fmt.Errorf("the run's folder belongs to another user")
 	}
 	return dir, nil
 }
@@ -460,7 +460,7 @@ func claudeBinary() (claudeCLI, error) {
 	if t, ok := wslrun.Find("claude"); ok {
 		return claudeCLI{wsl: &t}, nil
 	}
-	return claudeCLI{}, errors.New("Claude Code is not installed; install it and run `claude auth login`, " + claudecode.InstallHint)
+	return claudeCLI{}, errors.New("Claude Code is not available on the server; try again later")
 }
 
 func (c claudeCLI) command(ctx context.Context, args ...string) *exec.Cmd {
@@ -3419,12 +3419,14 @@ func (r *subscriptionRun) endedBefore(what string) error {
 	defer r.mu.Unlock()
 	why := "exited before it " + what
 	if r.killed {
-		why = "was ended by magpie before it " + what
+		why = "was ended before it " + what
 	} else if r.exit != nil {
 		why += " (" + r.exit.Error() + ")"
 	}
 	if said := strings.TrimSpace(r.stderr.String()); said != "" {
-		why += ": " + clipTail(said, 300)
+		// the tail is the operator's to read, not the customer's: it can
+		// hold paths and addresses
+		log.Printf("claude run %s: %s", why, clipTail(said, 300))
 	}
 	return errors.New(why)
 }

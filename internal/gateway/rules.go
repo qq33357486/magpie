@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"slices"
 	"strings"
@@ -676,7 +677,9 @@ func anyImageInput(a, b *bool) *bool {
 }
 
 // pausedError tells an agent that every model of the group it asked for
-// is paused now, by which rules and when.
+// is paused now, by which rules and when. Which rules pause which members
+// is the operator's to read in the log; the customer is told the group is
+// paused.
 func pausedError(asked string, paused []provider.Paused) string {
 	var bits []string
 	for _, p := range paused {
@@ -686,5 +689,6 @@ func pausedError(asked string, paused []provider.Paused) string {
 		}
 		bits = append(bits, fmt.Sprintf("%s (%s: %s)", p.Member, by, strings.Join(p.When, " · ")))
 	}
-	return fmt.Sprintf("every model of %s is paused now by its rules: %s; change the rules on Magpie's Routing page, or ask again when they end", asked, strings.Join(bits, ", "))
+	log.Printf("paused: every model of %s is paused now by its rules: %s", asked, strings.Join(bits, ", "))
+	return fmt.Sprintf("%s 的服务暂停中，请稍后重试", asked)
 }

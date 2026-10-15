@@ -76,7 +76,7 @@ func TestCodexCompact404CompactsLocally(t *testing.T) {
 		t.Fatalf("%d %s", code, body)
 	}
 	got := compactedText(t, body)
-	for _, want := range []string{"fix the login bug", "now add a test", "I fixed main.go", "Upstream request failed", "404"} {
+	for _, want := range []string{"本次会话压缩由网关在本地完成", "fix the login bug", "now add a test", "I fixed main.go"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("local summary lacks %q:\n%s", want, got)
 		}
@@ -136,7 +136,7 @@ func TestCodexCompactUpstreamFailed400CompactsLocally(t *testing.T) {
 			t.Fatalf("%v: %d %s", proto, code, body)
 		}
 		got := compactedText(t, body)
-		for _, want := range []string{"fix the login bug", "now add a test", "apex: Upstream request failed", "400"} {
+		for _, want := range []string{"本次会话压缩由网关在本地完成", "fix the login bug", "now add a test"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("%v: local summary lacks %q:\n%s", proto, want, got)
 			}

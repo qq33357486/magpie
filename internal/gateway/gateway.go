@@ -202,9 +202,10 @@ func unserved(asked string) bool {
 }
 
 // switchedOff says a request for model went nowhere because p, which
-// serves it, is switched off in magpie (provider.Provider.Off).
+// serves it, is switched off (provider.Provider.Off). The customer is
+// told the service is out, not the operator's way back in.
 func switchedOff(p provider.Provider, model string) string {
-	return fmt.Sprintf("%s is switched off in Magpie, so %q is not served; switch it on again in Magpie's Providers to use it", p.Name, model)
+	return fmt.Sprintf("模型 %s 所在的服务通道已停用，暂时无法服务，请稍后重试", model)
 }
 
 // Version is set by main.
@@ -1140,7 +1141,7 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
 					continue
 				}
 			}
-			writeError(w, provider.Anthropic, 502, c.p.Name+": "+err.Error())
+			writeError(w, provider.Anthropic, 502, err.Error())
 			return
 		}
 		if res.StatusCode >= 400 {
@@ -1156,7 +1157,7 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
 				}
 			}
 			keepRetry(w.Header(), res.Header, b)
-			writeError(w, provider.Anthropic, res.StatusCode, c.p.Explain(c.p.Name+": "+provider.APIError(b, res.Status), res.StatusCode, b))
+			writeError(w, provider.Anthropic, res.StatusCode, c.p.Explain(provider.APIError(b, res.Status), res.StatusCode, b))
 			return
 		}
 		defer res.Body.Close()
@@ -1507,9 +1508,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			return
 		}
 		msg := unknownModel(call.Model, "")
-		if g, ok := provider.DisabledGroup(asked); ok {
+		if _, ok := provider.DisabledGroup(asked); ok {
 			call.Error = "group switched off"
-			msg = fmt.Sprintf("the routing group %s is switched off in Magpie, so %q is not served; switch it on again on Magpie's Routing page to use it", g.Name, call.Model)
+			msg = fmt.Sprintf("模型 %s 所属的服务分组已停用，暂时无法服务，请稍后重试", call.Model)
 		} else if g, _, ok := provider.FindGroup(asked); ok && g.Decides() {
 			// a group of decision models answers System One, not this
 			call.Status, call.Error = 400, "a decision group"
@@ -1697,7 +1698,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			seen, err := s.seenBody(withDescribeFor(r.Context(), call.Agent, call.Model, sessionOf(r.Header), unknownSight), from, body, see)
 			if err != nil {
 				call.Status, call.Error = 502, "image not described"
-				writeError(w, from, 502, fmt.Sprintf("model %q can't see images, and %s couldn't describe the image for it: %v%s%s", call.Model, see, err, missingSeerNote(), autoSeerNote(see)))
+				log.Printf("vision: %s couldn't describe an image for %s: %v%s%s", see, call.Model, err, missingSeerNote(), autoSeerNote(see))
+				writeError(w, from, 502, fmt.Sprintf("模型 %s 暂不支持图片输入，图片描述服务也暂时不可用，请稍后重试", call.Model))
 				turnedAway()
 				return
 			}
@@ -1715,7 +1717,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 		if currentImage {
 			call.Status, call.Error = 400, "model does not support image input"
-			writeError(w, from, 400, fmt.Sprintf("model %q does not support image input%s", call.Model, noSeerNote()))
+			if note := noSeerNote(); note != "" {
+				log.Printf("vision: %s: %s", call.Model, note)
+			}
+			writeError(w, from, 400, fmt.Sprintf("模型 %s 不支持图片输入，请移除图片或更换支持图片的模型", call.Model))
 			turnedAway()
 			return
 		}
@@ -1801,7 +1806,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 		msg, back := cappedError(call.Model, held, time.Now())
 		if strictHeld != nil {
-			msg += ". The conversation stays strictly on that account (Stays: Strict), so magpie doesn't move it to another"
+			msg += "；该会话已绑定固定通道，未自动切换，请稍后重试"
 		}
 		if d := time.Until(back); d > 0 {
 			w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
@@ -1920,7 +1925,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 			if len(cands) == 0 {
 				call.Status, call.Error = 400, "model does not support image input"
-				writeError(w, from, 400, fmt.Sprintf("model %q does not support image input%s", call.Model, noSeerNote()))
+				if note := noSeerNote(); note != "" {
+					log.Printf("vision: %s: %s", call.Model, note)
+				}
+				writeError(w, from, 400, fmt.Sprintf("模型 %s 不支持图片输入，请移除图片或更换支持图片的模型", call.Model))
 				turnedAway()
 				return
 			}
@@ -2090,7 +2098,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 					}
 					see, _ := seeing()
 					call.Status = 502
-					failTo(w, kept, from, 502, fmt.Sprintf("model %q can't see images, and %s couldn't describe the image for it: %v%s%s", c.p.ID+"/"+c.model, see, err, missingSeerNote(), autoSeerNote(see)))
+					log.Printf("vision: %s couldn't describe an image for %s: %v%s%s", see, c.p.ID+"/"+c.model, err, missingSeerNote(), autoSeerNote(see))
+					failTo(w, kept, from, 502, fmt.Sprintf("模型 %s 暂不支持图片输入，图片描述服务也暂时不可用，请稍后重试", c.p.ID+"/"+c.model))
 					break
 				}
 				attemptBody = b
@@ -5004,7 +5013,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		return writeError(w, from, 502, msg), msg
 	}
 	if empty && !saidAnything(col.res.Parts) && answersNothing(col.res.Stop) {
-		msg := p.Name + ": " + emptyReply
+		msg := emptyReply
 		return writeError(w, from, 502, msg), msg
 	}
 	if zen != nil {
@@ -5826,15 +5835,43 @@ func failTo(w http.ResponseWriter, a *keptAlive, proto provider.Protocol, status
 func streamError(w http.ResponseWriter, proto provider.Protocol, status int, msg string) {
 	sw := newSSEWriter(w)
 	sw.begun = true
-	ev := Event{Kind: KError, Text: msg, Status: status}
+	ev := Event{Kind: KError, Text: toldOutside(msg), Status: status}
 	if tooLong(status, msg) {
 		ev.Code = "context_length_exceeded"
 	}
 	makeEncoder(proto, sw, &Request{}).event(ev)
 }
 
+// What a customer is told, in three rules (new code follows them too):
+//
+//  1. a message magpie itself composes for a paying stranger says what
+//     happened to the service and what to do next, in Chinese, and
+//     nothing else: no account address, no provider or key name, no
+//     share of a quota, no Settings page or CLI command. The details
+//     stay in the log, put there where the message is composed.
+//  2. a vendor's own error body passes as the vendor wrote it.
+//  3. no message says the stack's name: toldOutside, below, is the net
+//     under every reply, masking an address and the name wherever one
+//     slipped through.
+//
+// toldOutside masks what an error body told to a paying stranger must not
+// say: an account's address, and the stack's own name. A marker the
+// gateway reads back out of a body (codexResetSaid, the lapse words
+// ClaudeSignInRequired matches) must be written to survive this — no
+// address, no "magpie".
+var (
+	outsideEmail = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	outsideStack = regexp.MustCompile(`(?i)\bmagpie('s)?\b`)
+)
+
+func toldOutside(msg string) string {
+	msg = outsideEmail.ReplaceAllString(msg, "***@***")
+	return outsideStack.ReplaceAllString(msg, "the gateway$1")
+}
+
 // writeError answers in the client's own error shape.
 func writeError(w http.ResponseWriter, proto provider.Protocol, status int, msg string) int {
+	msg = toldOutside(msg)
 	typ := "api_error"
 	switch {
 	case status == 400:

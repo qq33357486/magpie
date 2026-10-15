@@ -156,7 +156,7 @@ func TestMaxRPMTooLongIs429WithRetryAfter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StatusCode != 429 || res.Header.Get("Retry-After") != "2" || !strings.Contains(body, "1 requests a minute is its limit") {
+	if res.StatusCode != 429 || res.Header.Get("Retry-After") != "2" || !strings.Contains(body, "请求过于频繁") {
 		t.Fatalf("second = %d Retry-After %q %s, want a 429 saying the limit, Retry-After 2", res.StatusCode, res.Header.Get("Retry-After"), body)
 	}
 	if d := time.Since(began); d > window/2 {

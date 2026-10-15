@@ -153,13 +153,13 @@ func TestKiroStreamErrors(t *testing.T) {
 		kiroEvent("assistantResponseEvent", `{"content":"hi"}`),
 		kiroMsg(map[string]string{":message-type": "exception", ":exception-type": "ThrottlingException"}, `{"message":"slow down"}`),
 	)
-	if got := said(evs); got != "|text:hi|error:rate limited: slow down" {
+	if got := said(evs); got != "|text:hi|error:请求过于频繁，请稍后重试：slow down" {
 		t.Fatal(got)
 	}
 	// a reply cut off mid-message
 	full := kiroEvent("assistantResponseEvent", `{"content":"hi"}`)
 	evs = kiroEvents(t, false, full, full[:10])
-	if got := said(evs); !strings.Contains(got, "|error:the reply broke off") {
+	if got := said(evs); !strings.Contains(got, "|error:回复中断") {
 		t.Fatal(got)
 	}
 }
@@ -320,8 +320,8 @@ func TestKiroFailure(t *testing.T) {
 		want   int
 		msg    string
 	}{
-		{400, `{"message":"Input is too long.","reason":"CONTENT_LENGTH_EXCEEDS_THRESHOLD"}`, 400, "input is too long"},
-		{429, `{"message":"You've reached the limit.","reason":"MONTHLY_REQUEST_COUNT"}`, 429, "usage limit reached"},
+		{400, `{"message":"Input is too long.","reason":"CONTENT_LENGTH_EXCEEDS_THRESHOLD"}`, 400, "对话内容超出模型的上下文长度限制"},
+		{429, `{"message":"You've reached the limit.","reason":"MONTHLY_REQUEST_COUNT"}`, 429, "使用额度已达上限"},
 		{500, `{"message":"busy","reason":"INSUFFICIENT_MODEL_CAPACITY"}`, 503, "busy"},
 		{400, `plain`, 400, "plain"},
 	} {
@@ -428,7 +428,7 @@ func TestServeKiroUsageLimit(t *testing.T) {
 	_, done := kiroUpstream(t, 402, []byte(`{"message":"You have reached the limit.","reason":"MONTHLY_REQUEST_COUNT"}`))
 	defer done()
 	w := serveKiroOnce(t, provider.Anthropic, `{"model":"x","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)
-	if w.Code != 429 || !strings.Contains(w.Body.String(), "usage limit reached") {
+	if w.Code != 429 || !strings.Contains(w.Body.String(), "使用额度已达上限") {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
 }

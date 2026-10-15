@@ -38,9 +38,14 @@ const CodexPath = "/backend-api/codex"
 // point it elsewhere.
 var codexAPIBase = "https://api.openai.com/v1"
 
-// magpieCompaction marks a compaction item magpie made: its summary, which
-// only magpie reads back.
-const magpieCompaction = "magpie1:"
+// magpieCompaction marks a compaction item the gateway made: its summary,
+// which only it reads back. The mark says no name a customer could tell
+// the stack by; legacyMagpieCompaction is the one it wrote before, read
+// still so a conversation held over an upgrade keeps working.
+const (
+	magpieCompaction        = "gw1:"
+	legacyMagpieCompaction  = "magpie1:"
+)
 
 var nativeSealedAgentPayload = regexp.MustCompile(`^gAAAAA[A-Za-z0-9_-]+={0,2}$`)
 
@@ -61,7 +66,7 @@ const codexSummaryPrefix = `Another language model started to solve this problem
 func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 	// Responses over a WebSocket: 426 sends Codex to plain HTTP at once
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		http.Error(w, "magpie speaks HTTP", http.StatusUpgradeRequired)
+		http.Error(w, "当前接口不支持 WebSocket，请使用 HTTP 访问", http.StatusUpgradeRequired)
 		return
 	}
 	// the pool's accounts and their model lists say they are this Codex, or
@@ -143,7 +148,7 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 		// Unknown providers/groups must fail locally, never fall through to OpenAI.
 		if strings.Contains(model, "/") {
 			if rest == "/responses/compact" {
-				writeError(w, provider.Responses, 400, "/responses/compact is not supported for Magpie models; use a compaction_trigger on /responses")
+				writeError(w, provider.Responses, 400, "该模型不支持 /responses/compact 接口，请在 /responses 请求中使用 compaction_trigger 触发压缩")
 				return
 			}
 			// a sealed subagent task goes to a ChatGPT account the model
@@ -181,7 +186,7 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Header.Get(AccountHeader) != "" {
 			// relayed as it came, it would go to Codex's own sign-in only
-			writeError(w, provider.Responses, 400, AccountHeader+" names one of magpie's Codex accounts, and Codex isn't signed in to ChatGPT here with any on in magpie")
+			writeError(w, provider.Responses, 400, "指定的服务通道当前不可用，请去掉账号固定请求头后重试，或稍后再试")
 			return
 		}
 	}
@@ -202,16 +207,13 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 // is said too (#1367). earlier is a provider that answered the lead's
 // earlier turns but can't have sealed the task (canSeal): the lead moved
 // on to Codex's own model, whose turns magpie keeps no record of, and the
-// task was sealed there (plugins#70). Each says what is sealed: the task
-// itself, which fork_turns="none" doesn't change (#1855).
+// task was sealed there (plugins#70). The customer is told the task is
+// sealed and unreadable, and to have it made again where it can be read;
+// which server sealed it, and the operator's way around it, are the
+// log's to hold.
 func sealedTaskError(model, lead, earlier string) string {
-	if earlier != "" {
-		return fmt.Sprintf("This subagent's task was sealed by the ChatGPT backend, which answered the agent that sent it on one of Codex's own models (a subagent of this thread put there, or the lead after a switch), and only a ChatGPT account can open it. %s can't. %s answered the lead's earlier turns, but it neither seals a task nor opens one. "+sealedTaskItself+" Set Codex's subagent model on magpie's Agents page to a model of a ChatGPT account added in magpie, or to one that isn't served by the ChatGPT backend, so subagents get tasks they can read. To go on with this task, have it spawned again from an agent that isn't on Codex's own models.", model, earlier)
-	}
-	if lead != "" {
-		return fmt.Sprintf("This subagent's task was sealed by the server that answered its lead (%s), and only that server can open it; %s can't. "+sealedTaskItself+" Give the subagent the lead's model, or a lead model that isn't served by the ChatGPT backend, so its subagents get a task they can read. To go on with this task, use a model on %s for the lead and the subagent, or have the lead spawn the subagent again.", lead, model, lead)
-	}
-	return fmt.Sprintf("This subagent's task was sealed by the ChatGPT backend that answered its lead, and only that backend can open it: a ChatGPT account, or the Responses API provider that answered the lead. %s is neither: magpie has no record of it answering the lead in the last 30 days. "+sealedTaskItself+" Give the subagent the lead's model, or a lead model that isn't served by the ChatGPT backend, so its subagents get a task they can read. To go on with this task, use the lead's model, or have the lead spawn the subagent again.", model)
+	log.Printf("sealed task: model=%s lead=%s earlier=%s", model, lead, earlier)
+	return fmt.Sprintf("该子任务的内容已由上游加密绑定（sealed），只有当初生成它的服务能解读，当前模型（%s）无法读取。请让发起方在与原任务一致的模型下重新下发该子任务。", model)
 }
 
 // sealedTaskItself says what a sealed task is (#1855): spawn_agent's
@@ -489,12 +491,7 @@ func withoutSealedMessages(body []byte) ([]byte, bool) {
 		if !message || !sealed {
 			continue
 		}
-		var from string
-		json.Unmarshal(item["author"], &from)
-		if from == "" {
-			from = "another agent"
-		}
-		note := "[magpie: this message from " + from + " was sealed by the ChatGPT backend, which answered that agent on one of Codex's own models, and only it can open it; this model can't, so it was left out. An agent's final result still reaches the agent that spawned it as text.]"
+		note := "[该消息已由上游加密绑定（sealed），当前模型无法读取，已略去；发送方的最终结果仍会以文本送达。]"
 		for j, p := range parts {
 			if c, _ := p["encrypted_content"].(string); p["type"] == "encrypted_content" && nativeSealedAgentPayload.MatchString(c) {
 				parts[j] = map[string]any{"type": "input_text", "text": note}
@@ -557,11 +554,13 @@ func compactSigninHeld(r *http.Request, model string, on *provider.Provider) (ac
 // compactHeldError is what a native compaction is refused with on a key
 // whose accounts (#905) don't take in the sign-in Codex compacts on:
 // native compaction has no other route — the encrypted history in the
-// request is bound to that account — so the message says the two ways
-// out, not the accounts alone.
+// request is bound to that account. The two ways out are the operator's
+// to read in the log; the customer is told only that the account the
+// compaction needs is not theirs to use.
 func compactHeldError(who access.Identity, model string) string {
-	return fmt.Sprintf("Native compaction for %s goes through the account Codex is signed in to, which the gateway key %q may not use; it may use %s. Native compaction has no other route: add the signed-in account to the key in magpie's Gateway page, or use one of magpie's models, whose compaction goes through a compaction_trigger on /responses and the key's accounts.",
+	log.Printf("key held: native compaction for %s goes through the account Codex is signed in to, which the gateway key %q may not use; it may use %s",
 		model, who.KeyName, keyAccountNames(who))
+	return "当前密钥无权使用压缩所需的账号"
 }
 
 // compactOn is the account a native compaction of one of Codex's own
@@ -770,7 +769,8 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			// what Codex said it takes back stays as it said it
 			accept := req.Header.Values("Accept")
 			if err := on.Sign(ctx, req, provider.Responses, body); err != nil {
-				msg := "OpenAI (" + on.Account.User + "): " + err.Error()
+				log.Printf("codex: %s: %v", on.Account.User, err)
+				msg := "OpenAI: " + err.Error()
 				writeError(w, provider.Responses, 502, msg)
 				end(502, msg, 0, 0)
 				return
@@ -1028,30 +1028,23 @@ func codexKeyRefused(msg []byte) string {
 	if json.Unmarshal(msg, &e) == nil && e.Error.Message != "" {
 		said = e.Error.Message
 	}
-	return "OpenAI refused the API key Codex is signed in with (" + said + "). " +
-		"This is one of Codex's own models, which goes to OpenAI with Codex's own sign-in: " +
-		"pick one of magpie's models in Codex (provider/model, or set it in magpie's Agents view), " +
-		"or sign Codex in with ChatGPT, or with an OpenAI API key"
+	return fmt.Sprintf("上游拒绝了当前使用的 API 密钥（%s）；请稍后重试或更换模型", said)
 }
 
 // codexUnreached says why a model of Codex's own failed with 502: OpenAI,
 // where it goes with Codex's own sign-in, couldn't be reached — often from
 // a Codex whose only sign-in is a relay's key, whose own models it still
-// lists (#322) — and what to do about it.
+// lists (#322). The customer is told the service is out; where it couldn't
+// be reached is the log's to hold.
 func codexUnreached(model string, err error) string {
-	return "OpenAI can't be reached (" + err.Error() + "). " + model + " is one of Codex's own models, " +
-		"which goes to OpenAI with Codex's own sign-in: pick one of magpie's models in Codex " +
-		"(provider/model, or set it in magpie's Agents view), or let Codex reach OpenAI"
+	log.Printf("codex: %s: OpenAI can't be reached: %v", model, err)
+	return "上游服务暂时无法访问，请稍后重试；若持续出现请更换模型"
 }
 
 // codexFailedEmpty says why a model of Codex's own failed when OpenAI gave
-// an error status and nothing else: where it went, and what to do — a
-// Codex left on its own model while magpie's Agents view picked another
-// for it sends the turn to OpenAI, not to that one (#409).
+// an error status and nothing else (#409).
 func codexFailedEmpty(model, status string) string {
-	return "OpenAI answered " + status + " and said nothing more. " + model + " is one of Codex's own models, " +
-		"which goes to OpenAI with Codex's own sign-in, not to a provider in magpie: pick one of magpie's models in Codex " +
-		"(provider/model, or set it in magpie's Agents view), or try again later"
+	return fmt.Sprintf("上游服务返回了错误（%s）且未说明原因，请稍后重试；若持续出现请更换模型", status)
 }
 
 // apiKey reports whether Codex signed in with an API key rather than a
@@ -1363,6 +1356,9 @@ func codexInput(body []byte, magpieModel bool) (_ []byte, compact bool) {
 		case "compaction", "compaction_summary":
 			enc, _ := it["encrypted_content"].(string)
 			sum, ok := strings.CutPrefix(enc, magpieCompaction)
+			if !ok {
+				sum, ok = strings.CutPrefix(enc, legacyMagpieCompaction)
+			}
 			if !ok {
 				out = append(out, it) // OpenAI's own, for OpenAI
 				continue
@@ -2078,16 +2074,17 @@ func localSummary(body []byte, why string) string {
 		n += len(asked[from])
 	}
 	var b strings.Builder
-	b.WriteString("magpie compacted this conversation without a model (" + why + "), so this is no summary: it is what the user asked")
+	log.Printf("codex: compacted locally without a model: %s", why)
+	b.WriteString("（本次会话压缩由网关在本地完成，不是模型生成的摘要：上游对摘要请求返回了错误。以下为用户最近的消息与最后一条回复，请先查看工作区确认进度。）")
 	if from > 0 {
-		fmt.Fprintf(&b, " (the latest %d of %d messages)", len(asked)-from, len(asked))
+		fmt.Fprintf(&b, "（最近 %d 条，共 %d 条消息）", len(asked)-from, len(asked))
 	}
-	b.WriteString(" and the last reply. Look at the workspace for where the work stands before going on.\n\n## The user's messages\n")
+	b.WriteString("\n\n## 用户的消息\n")
 	for _, a := range asked[from:] {
 		b.WriteString("\n" + a + "\n")
 	}
 	if last != "" {
-		b.WriteString("\n## The last reply\n\n" + last + "\n")
+		b.WriteString("\n## 最后一条回复\n\n" + last + "\n")
 	}
 	return b.String()
 }

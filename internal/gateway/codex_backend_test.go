@@ -669,7 +669,7 @@ func TestCodexOwnModelKeyRefused(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer sk-relay-key")
 	New().Handler().ServeHTTP(rec, req)
 	body := rec.Body.String()
-	if rec.Code != 401 || !strings.Contains(body, "Incorrect API key provided") || !strings.Contains(body, "pick one of magpie's models") {
+	if rec.Code != 401 || !strings.Contains(body, "Incorrect API key provided") || !strings.Contains(body, "上游拒绝了当前使用的 API 密钥") {
 		t.Fatalf("%d %s", rec.Code, body)
 	}
 }
@@ -773,7 +773,7 @@ func TestCodexThirdPartyCompactEndpointRejected(t *testing.T) {
 		w.WriteHeader(400)
 	})
 	code, body := post(t, CodexPath+"/responses/compact", `{"model":"fake/m1","input":[]}`)
-	if code != 400 || !strings.Contains(body, "not supported") || f.calls != 0 {
+	if code != 400 || !strings.Contains(body, "不支持 /responses/compact") || f.calls != 0 {
 		t.Fatalf("%d %s, calls %d", code, body, f.calls)
 	}
 }

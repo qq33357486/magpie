@@ -61,11 +61,9 @@ func TestSealedTaskWithForkTurnsNoneSaysTheTaskItselfIsSealed(t *testing.T) {
 	if rec.Code != 400 || *asked != 0 || strings.Contains(rec.Body.String(), "gAAAAA") {
 		t.Fatalf("subagent: %d %s (ag asked %d times)", rec.Code, rec.Body.String(), *asked)
 	}
-	if !strings.Contains(msg, "sealed by the ChatGPT backend that answered its lead") ||
-		!strings.Contains(msg, "What is sealed is the task itself") ||
-		!strings.Contains(msg, "spawn_agent") ||
-		!strings.Contains(msg, `fork_turns="none" keeps the lead's earlier turns out of the subagent, but not the seal on its task`) ||
-		!strings.Contains(msg, "Give the subagent the lead's model") {
+	if !strings.Contains(msg, "已由上游加密绑定") ||
+		!strings.Contains(msg, "（ag/dfmodel）无法读取") ||
+		!strings.Contains(msg, "重新下发") {
 		t.Fatalf("the refusal doesn't say the task itself is sealed whatever fork_turns says: %s", msg)
 	}
 }

@@ -48,7 +48,7 @@ func TestKnownTextOnlyModelRejectsImagesBeforeUpstream(t *testing.T) {
 	for _, tc := range cases {
 		rec := httptest.NewRecorder()
 		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body)))
-		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "does not support image input") {
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "不支持图片输入") {
 			t.Errorf("%s: %d %s", tc.path, rec.Code, rec.Body.String())
 		}
 	}

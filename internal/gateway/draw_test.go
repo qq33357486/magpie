@@ -171,30 +171,50 @@ func TestEditSendsTheImages(t *testing.T) {
 	}
 }
 
-// Every account of a subscription held at its usage cap is told when to
-// come back, as the text path tells it (cappedError's soonest, in a
-// Retry-After): drawOnAccounts worked the same message out and dropped the
-// time, so a client backing off a drawing had nothing to wait by.
-func TestDrawCappedSaysWhenItIsBack(t *testing.T) {
+// A drawing is not held back by a usage cap, as a chat is: it spends no
+// text window, so the account is asked all the same — here answered by
+// the vendor's own image quota, whose refusal (not the operator's cap)
+// is what a drawing lane rests on. Only the cap set not to spend credits
+// would hold it, as a drawing may spend them.
+func TestDrawCappedStillDraws(t *testing.T) {
 	codexSignedIn(t)
 	capUsage(t, map[string]float64{"me@example.com": 90}) // five hours at 90% of a 70% cap, renewing in three
 	if err := provider.SetAccountCap("codex", "me@example.com", 70); err != nil {
 		t.Fatal(err)
 	}
+	var asked int
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `{"type":"usage_limit_reached","resets_at":"`+time.Now().Add(time.Hour).UTC().Format(time.RFC3339)+`"}`)
+	}))
+	defer up.Close()
+	// the refusal benches the account's drawing lane, a table the next
+	// tests share: it is put back as this test found it
+	drawRest.Lock()
+	wasRest := drawRest.until
+	drawRest.until = nil
+	drawRest.Unlock()
+	t.Cleanup(func() {
+		drawRest.Lock()
+		drawRest.until = wasRest
+		drawRest.Unlock()
+	})
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	defer func() { provider.CodexBase = was }()
 	p, err := provider.Find("codex")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := New()
-	_, _, code, back, err := s.drawOnAccounts(context.Background(), httptest.NewRequest("POST", "/v1/images/generations", nil), *p, "gpt-image-1", drawing{})
-	if code != http.StatusTooManyRequests || err == nil {
+	_, _, code, _, err := s.drawOnAccounts(context.Background(), httptest.NewRequest("POST", "/v1/images/generations", nil), *p, "gpt-image-1", drawing{})
+	if asked != 1 {
+		t.Fatalf("the capped account was not asked (%d asks)", asked)
+	}
+	if code != http.StatusTooManyRequests || err == nil || strings.Contains(err.Error(), "example.com") || strings.Contains(err.Error(), "magpie") {
 		t.Fatalf("%d %v", code, err)
-	}
-	if !strings.Contains(err.Error(), "past its 70% cap") {
-		t.Fatalf("error: %v", err)
-	}
-	if d := time.Until(back); d < 2*time.Hour || d > 4*time.Hour {
-		t.Fatalf("back in %v, not the five hours' renewal", d)
 	}
 }
 

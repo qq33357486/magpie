@@ -484,7 +484,9 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			}
 			msg := err.Error()
 			if len(skipped) > 0 {
-				msg += " (tried first: " + call.Fallback + ")"
+				// the members gone over before the last one are the
+				// operator's to read here, not the customer's in the reply
+				log.Printf("draw %s: %s (tried first: %s)", call.Model, msg, call.Fallback)
 			}
 			writeError(w, provider.Chat, code, msg)
 			return
@@ -825,6 +827,19 @@ func (s *Server) drawOnAccounts(ctx context.Context, r *http.Request, p provider
 			cs = append(cs, c)
 		}
 	}
+	// an account held at its usage cap is out for text, but a drawing
+	// spends no text window: it is asked here too, behind the ones listed,
+	// until the vendor's own image quota refuses it (benchedDrawing, which
+	// cools the drawing lane alone) — only the cap set not to spend
+	// credits holds a drawing back, as a drawing may spend them
+	for _, c := range barred {
+		if c.capped == nil || c.capped.noCredits {
+			continue
+		}
+		if !slices.ContainsFunc(cs, func(o candidate) bool { return o.p.AccountID() == c.p.AccountID() }) {
+			cs = append(cs, c)
+		}
+	}
 	// the accounts the calling key may not use are left out of the whole
 	// fan-out (#905): the next one a refusal hands the request to no less
 	// than the first, so none it may not use draws
@@ -851,7 +866,7 @@ func (s *Server) drawOnAccounts(ctx context.Context, r *http.Request, p provider
 	// turns, ahead of any whose lane is cooling — and none to ask when
 	// every lane is, the earliest back in the Retry-After
 	if ready, cooling, back := drawLaneOrder(cs); len(ready) == 0 && len(cooling) > 0 {
-		return p, drawn{}, http.StatusTooManyRequests, back, fmt.Errorf("every account's image quota is spent for now: the first is back in %s", time.Until(back).Round(time.Second))
+		return p, drawn{}, http.StatusTooManyRequests, back, fmt.Errorf("生图额度暂时用尽，预计%s后恢复，请稍后重试", untilInWords(time.Until(back)))
 	} else if len(ready) > 0 {
 		cs = append(ready, cooling...)
 	}

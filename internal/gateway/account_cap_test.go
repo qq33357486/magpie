@@ -73,8 +73,10 @@ func TestAccountCapMovesOn(t *testing.T) {
 }
 
 // Every account at its cap: the client is refused as when all are used
-// up (429, a rate-limit error), told the cap was reached and what it is,
-// and when to try again; nothing is sent to the vendor.
+// up (429, a rate-limit error), told the service is out and when it is
+// back in the reader's words — the accounts, their caps and their
+// addresses are the operator's, kept out of the reply; nothing is sent
+// to the vendor.
 func TestAccountCapEveryAccount(t *testing.T) {
 	codexSignedIn(t, "spare@example.com")
 	b := newResetBackend(t)
@@ -89,9 +91,14 @@ func TestAccountCapEveryAccount(t *testing.T) {
 	if tried, _ := b.seen(); code != 429 || tried != "" {
 		t.Fatalf("%d tried %q", code, tried)
 	}
-	for _, want := range []string{"rate_limit_error", "usage cap reached", "me@example.com", "past its 70% cap", "spare@example.com", "past its 90% cap", "account-cap"} {
+	for _, want := range []string{"rate_limit_error", "服务额度暂时用尽", "后恢复，请稍后重试"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("no %q in %s", want, body)
+		}
+	}
+	for _, leak := range []string{"example.com", "% cap", "magpie", "usage cap"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("%q told outside: %s", leak, body)
 		}
 	}
 	if calls := srv.Recent(); len(calls) == 0 || calls[0].Status != 429 || calls[0].Error != "every account at its usage cap" {
@@ -118,7 +125,7 @@ func TestAccountCapSpendsNoCodexReset(t *testing.T) {
 	srv := New()
 	code, body := resetPost(t, srv)
 	tried, spent := b.seen()
-	if code != 429 || !strings.Contains(body, "usage cap reached") || !strings.Contains(body, "70%") || tried != "" || spent != "" {
+	if code != 429 || !strings.Contains(body, "服务额度暂时用尽") || strings.Contains(body, "example.com") || tried != "" || spent != "" {
 		t.Fatalf("%d %s tried %q spent %q", code, body, tried, spent)
 	}
 	if got := resetsTraced(srv); len(got) != 0 {
@@ -214,9 +221,14 @@ func TestWindowCapsHoldTheAccount(t *testing.T) {
 	if code != 429 || tried != "" {
 		t.Fatalf("both held: %d tried %q", code, tried)
 	}
-	for _, want := range []string{"usage cap reached", "(me@example.com) is at 45%", "past its 40% cap", "spare@example.com", "past its 10% cap"} {
+	for _, want := range []string{"服务额度暂时用尽", "后恢复，请稍后重试"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("no %q in %s", want, body)
+		}
+	}
+	for _, leak := range []string{"example.com", "% cap"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("%q told outside: %s", leak, body)
 		}
 	}
 }
@@ -259,7 +271,7 @@ func TestAccountCapLetsAutoReviewThrough(t *testing.T) {
 		{"/v1/responses", "codex/gpt-5.5"},
 	} {
 		code, body := post(c.path, c.model)
-		if tried, _ := b.seen(); code != 429 || !strings.Contains(body, "usage cap reached") || tried != "" {
+		if tried, _ := b.seen(); code != 429 || !strings.Contains(body, "服务额度暂时用尽") || tried != "" {
 			t.Errorf("%s %s: %d %s tried %q", c.path, c.model, code, body, tried)
 		}
 	}

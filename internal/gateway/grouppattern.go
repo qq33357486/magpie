@@ -23,8 +23,5 @@ func emptyGroup(id string) (provider.Group, bool) {
 }
 
 func emptyGroupError(g provider.Group) string {
-	if len(g.Match) == 0 {
-		return fmt.Sprintf("the group %s has no model in it", g.Name)
-	}
-	return fmt.Sprintf("the group %s has no model now: its patterns (%s) match no model magpie serves; magpie group %s shows them", g.Name, strings.Join(g.Match, ", "), g.ID)
+	return fmt.Sprintf("分组 %s 当前没有可用模型，请更换其他模型", g.Name)
 }

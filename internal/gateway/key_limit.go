@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -46,11 +48,15 @@ func keyLimited(next http.Handler) http.Handler {
 		release, refused := budget.Reserve(who, size, model, now)
 		if refused != nil {
 			msg := refused.Error()
+			log.Printf("key limit: %s", msg)
+			// the key's name and numbers are the operator's; the customer
+			// is told the limit is met and when it lifts
+			told := fmt.Sprintf("该密钥本周期用量已达上限，预计%s后重置，请稍后重试", untilInWords(time.Duration(refused.RetryAfter(now))*time.Second))
 			w.Header().Set("Retry-After", strconv.Itoa(refused.RetryAfter(now)))
 			// the Anthropic and OpenAI SDKs would otherwise retry a 429
 			w.Header().Set("X-Should-Retry", "false")
 			w.Header().Set("X-Magpie-Limit-Reset", refused.Reset.Format(time.RFC3339))
-			writeError(w, protoOfPath(r.URL.Path), http.StatusTooManyRequests, msg)
+			writeError(w, protoOfPath(r.URL.Path), http.StatusTooManyRequests, told)
 			c := callerOf(r)
 			appendUsage(r, usage.Record{Time: now, Agent: c.agent, Via: c.via, Requested: model, Status: http.StatusTooManyRequests, Rejected: true,
 				Error: msg, ErrType: "gateway_key_limit", Endpoint: r.URL.Path, Session: sessionOf(r.Header), NativeSession: nativeSessionOf(r.Header)})

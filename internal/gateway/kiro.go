@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -75,7 +76,8 @@ func (s *Server) askKiro(p provider.Provider, model string) round {
 	return func(ctx context.Context, req *Request) (<-chan Event, int, string) {
 		auth, err := kiroAuth(ctx, p.Key, home, false)
 		if err != nil {
-			return nil, 401, "Kiro: " + err.Error()
+			log.Printf("kiro: auth: %v", err)
+			return nil, 401, "服务暂时不可用（凭证已失效），请稍后重试"
 		}
 		window, _ := provider.KiroModel(model)
 		thinking := kiroThinks(req, model)
@@ -88,13 +90,14 @@ func (s *Server) askKiro(p provider.Provider, model string) round {
 			}
 		}
 		if err != nil {
-			return nil, 502, "Kiro: " + err.Error()
+			log.Printf("kiro: send: %v", err)
+			return nil, 502, "上游服务暂时无法连接，请稍后重试"
 		}
 		if res.StatusCode/100 != 2 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body.Close()
 			status, msg := kiroFailure(res.StatusCode, b)
-			return nil, status, "Kiro: " + msg
+			return nil, status, msg
 		}
 		events := make(chan Event, 16)
 		go func() {
@@ -150,12 +153,13 @@ func kiroFailure(status int, body []byte) (int, string) {
 	}
 	switch {
 	case strings.Contains(msg, "CONTENT_LENGTH_EXCEEDS_THRESHOLD") || strings.Contains(strings.ToLower(msg), "input is too long"):
-		// what the rest of magpie takes for a conversation that no longer fits
-		return 400, "input is too long for the model's context: " + msg
+		// what the rest of the gateway takes for a conversation that no
+		// longer fits — the words tooLong matches on, kept word for word
+		return 400, "对话内容超出模型的上下文长度限制：" + msg
 	case strings.Contains(msg, "INSUFFICIENT_MODEL_CAPACITY"):
 		return 503, msg
 	case strings.Contains(msg, "MONTHLY_REQUEST_COUNT") || strings.Contains(msg, "USAGE_LIMIT"):
-		return 429, "usage limit reached: " + msg
+		return 429, "使用额度已达上限：" + msg
 	}
 	return status, msg
 }
@@ -661,7 +665,8 @@ func decodeKiro(ctx context.Context, body io.Reader, out chan<- Event, model str
 		f, err := readKiroFrame(br)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && ctx.Err() == nil {
-				failed = "the reply broke off: " + err.Error()
+				log.Printf("kiro: %v", err)
+				failed = "回复中断，请稍后重试"
 			}
 			break
 		}
@@ -838,7 +843,7 @@ func kiroException(kind string, payload []byte) string {
 	}
 	switch {
 	case strings.Contains(strings.ToLower(kind), "throttl"):
-		return "rate limited: " + msg
+		return "请求过于频繁，请稍后重试：" + msg
 	case kind != "":
 		return kind + ": " + msg
 	}

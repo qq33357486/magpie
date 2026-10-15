@@ -70,7 +70,7 @@ func TestCountTokensUpstreamErrors(t *testing.T) {
 				Type  string
 				Error struct{ Type, Message string }
 			}
-			message := "Fake: " + tc.message
+			message := tc.message
 			if tc.name == "prompt_too_long_zh" {
 				message = "prompt is too long: " + message
 			}
@@ -224,7 +224,7 @@ func TestCountTokensKeyFailover(t *testing.T) {
 					t.Fatalf("masked estimate: %s", rec.Body)
 				}
 			default:
-				if !strings.Contains(rec.Body.String(), "Count: "+provider.APIError([]byte(tc.reply), "")) {
+				if !strings.Contains(rec.Body.String(), provider.APIError([]byte(tc.reply), "")) {
 					t.Fatalf("last error was lost: %s", rec.Body)
 				}
 			}
@@ -241,7 +241,7 @@ func TestCountTokensTransportError(t *testing.T) {
 		Error struct{ Type, Message string }
 	}
 	if err := json.Unmarshal([]byte(body), &result); err != nil || code != 502 || result.Type != "error" ||
-		result.Error.Type != "api_error" || !strings.HasPrefix(result.Error.Message, "Fake: ") {
+		result.Error.Type != "api_error" || !strings.Contains(result.Error.Message, "dial") {
 		t.Fatalf("transport error: %d %s (decode: %v)", code, body, err)
 	}
 }

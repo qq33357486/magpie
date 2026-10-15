@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"slices"
@@ -599,11 +600,13 @@ func capHeld(p, acct provider.Provider, model string, now time.Time) *capHold {
 
 // cappedError says why a request for model went nowhere when every account
 // that could take it is held at its usage cap, as the vendor's own refusal
-// would when all are used up; the soonest one is back is the wait.
+// would when all are used up; the soonest one is back is the wait. A
+// relayed gateway's error is read by paying strangers, so the customer is
+// told only that the service is out and when it is back, in their words;
+// the accounts, their shares and their addresses stay in the log.
 func cappedError(model string, ws []Weighed, now time.Time) (string, time.Time) {
 	var held []string
 	var soonest time.Time
-	capped, noCredits := heldBy(ws)
 	for _, w := range ws {
 		if w.Capped == 0 {
 			continue
@@ -620,13 +623,26 @@ func cappedError(model string, ws []Weighed, now time.Time) (string, time.Time) 
 		}
 		held = append(held, s)
 	}
-	switch {
-	case !noCredits:
-		return fmt.Sprintf("usage cap reached: every account that serves %q is held at the usage cap set on it in magpie — %s. magpie uses it again once that window renews; raise or lift the cap in magpie (Providers → the account's cap, or magpie provider account-cap)", model, strings.Join(held, "; ")), soonest
-	case !capped:
-		return fmt.Sprintf("usage limit reached: every account that serves %q has used up its allowance and is set in magpie not to spend its credits — %s. magpie uses it again once that window renews; to go on now, if an account holds credits, let it spend them (Usage → the account's Use credits, or magpie quota credits <account> on)", model, strings.Join(held, "; ")), soonest
+	if len(held) > 0 {
+		log.Printf("usage cap: %s: %s", model, strings.Join(held, "; "))
 	}
-	return fmt.Sprintf("usage limit reached: every account that serves %q is held by magpie — %s. magpie uses it again once that window renews; to go on now, raise or lift a cap (Providers → the account's cap, or magpie provider account-cap) or, if an account holds credits, let it spend them (Usage → the account's Use credits, or magpie quota credits <account> on)", model, strings.Join(held, "; ")), soonest
+	back := ""
+	if !soonest.IsZero() {
+		back = "，预计" + untilInWords(time.Until(soonest)) + "后恢复"
+	}
+	return fmt.Sprintf("模型 %s 的服务额度暂时用尽%s，请稍后重试", model, back), soonest
+}
+
+// untilInWords says a wait the way a customer reads it, not by the clock of
+// the machine serving them.
+func untilInWords(d time.Duration) string {
+	if d < time.Minute {
+		return "1 分钟内"
+	}
+	if m := int(d.Minutes()) + 1; m <= 90 {
+		return fmt.Sprintf("约 %d 分钟", m)
+	}
+	return fmt.Sprintf("约 %.1f 小时", d.Hours())
 }
 
 // heldBy says what holds the accounts of ws held at a share: a usage cap
@@ -700,7 +716,9 @@ func barredOf(cs []candidate, q provider.Provider, fallback bool, from provider.
 }
 
 // barredError says why a request for model went nowhere when every account
-// or key that could take it was set not to serve it.
+// or key that could take it was set not to serve it. Whose lists leave it
+// out is the operator's to read in the log; the customer is told the model
+// alone is unavailable.
 func barredError(model string, ws []Weighed) string {
 	var names []string
 	for _, w := range ws {
@@ -708,7 +726,8 @@ func barredError(model string, ws []Weighed) string {
 			names = append(names, w.Name)
 		}
 	}
-	return fmt.Sprintf("model %q is set not to be served by any account or key of %s: each one's own list of models leaves it out. Add it to an account's models in magpie (Providers → the account's Models), or pick another model", model, strings.Join(names, ", "))
+	log.Printf("model not served: %q is set not to be served by any account or key of %s", model, strings.Join(names, ", "))
+	return fmt.Sprintf("模型 %s 暂不可用", model)
 }
 
 // asideOf is how the trace tells the keys made for another protocol than
@@ -2807,18 +2826,21 @@ func pinTo(want string, cands []candidate, pl planned) ([]candidate, planned, in
 		return out, planned{order: order}, 0, ""
 	}
 	if len(rests) > 0 {
-		return nil, pl, http.StatusTooManyRequests, AccountHeader + ": " + strings.Join(rests, "; ") + "; no other account is tried in its place"
+		log.Printf("%s: %s", AccountHeader, strings.Join(rests, "; "))
+		return nil, pl, http.StatusTooManyRequests, "指定的账号暂不可用，请稍后重试"
 	}
 	for _, w := range pl.left {
 		if match(w) && w.Held {
-			return nil, pl, http.StatusForbidden, fmt.Sprintf("%s: the gateway key may not use %s's account", AccountHeader, w.Who)
+			log.Printf("%s: the gateway key may not use %s's account", AccountHeader, w.Who)
+			return nil, pl, http.StatusForbidden, "该访问密钥无权使用指定账号"
 		}
 		if match(w) && w.Capped > 0 {
 			msg, _ := cappedError(w.Model, []Weighed{w}, time.Now())
-			return nil, pl, http.StatusTooManyRequests, AccountHeader + ": " + msg + "; no other account is tried in its place"
+			return nil, pl, http.StatusTooManyRequests, msg
 		}
 		if match(w) {
-			return nil, pl, http.StatusBadRequest, fmt.Sprintf("%s: %s's plan doesn't list %s", AccountHeader, w.Who, w.Model)
+			log.Printf("%s: %s's plan doesn't list %s", AccountHeader, w.Who, w.Model)
+			return nil, pl, http.StatusBadRequest, "指定账号暂不支持该模型"
 		}
 	}
 	var have []string
@@ -2827,9 +2849,8 @@ func pinTo(want string, cands []candidate, pl planned) ([]candidate, planned, in
 			have = append(have, w.Who)
 		}
 	}
-	msg := fmt.Sprintf("%s: no account %q serves this model", AccountHeader, want)
 	if len(have) > 0 {
-		msg += "; its accounts are " + strings.Join(have, ", ")
+		log.Printf("%s: no account %q serves this model; its accounts are %s", AccountHeader, want, strings.Join(have, ", "))
 	}
-	return nil, pl, http.StatusNotFound, msg
+	return nil, pl, http.StatusNotFound, "没有该名称的账号可服务此模型"
 }

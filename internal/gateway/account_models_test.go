@@ -110,7 +110,7 @@ func TestAccountModelsNeverChosen(t *testing.T) {
 	}
 	*heads = nil
 	code, body := post()
-	if code != 403 || len(*heads) != 0 || !strings.Contains(body, "gpt-5.5") || !strings.Contains(body, "own list of models") {
+	if code != 403 || len(*heads) != 0 || !strings.Contains(body, "暂不可用") || strings.Contains(body, "own list") {
 		t.Fatalf("all barred: %d %s, upstream %v", code, body, *heads)
 	}
 	var e struct {

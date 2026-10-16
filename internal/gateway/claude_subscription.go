@@ -2704,7 +2704,7 @@ func renderParts(blocks []map[string]any, text *strings.Builder, parts []Part, o
 		}
 		switch p.Kind {
 		case Text:
-			text.WriteString(p.Text)
+			text.WriteString(rewriteImageNotes(p.Text))
 		case File:
 			text.WriteString(attachmentText(p))
 		case Thinking:

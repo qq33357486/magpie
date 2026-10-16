@@ -3864,6 +3864,17 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name string, req *Request, events <-chan Event, usage *Usage,
 	abort, begin func(), ended func(said, stop string, ok bool)) (int, string) {
 	stream := req.Stream
+	// written wraps see for calls the model wrote into its text instead of
+	// making, as one told the conversation again does the way it reads its
+	// calls made (textcalls.go): a request that offered no tools has none
+	// read out of it.
+	written := func(see func(Event)) (take func(Event), held func()) {
+		if names := textCallNames(req.Tools); names != nil {
+			t := &textCallSee{names: names, see: see}
+			return t.event, t.release
+		}
+		return see, func() {}
+	}
 	if stream {
 		// an error before any of the answer — out of quota, rate limited —
 		// is a status, not a stream, so another account can take over
@@ -3912,15 +3923,17 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 			}
 			enc.event(ev)
 		}
+		take, held := written(see)
 		for _, ev := range head {
-			see(ev)
+			take(ev)
 		}
 		// a client waiting on a reply that goes on is kept from its idle
 		// timeout while none of it comes (#436)
 		relayEvents(events, sw, enc, func(ev Event) bool {
-			see(ev)
+			take(ev)
 			return true
 		})
+		held()
 		// before the reply's last event, which the agent may answer at once
 		ended(said, stop, failed == "" && r.Context().Err() == nil)
 		// an error event already ended the reply in the client's protocol
@@ -3931,7 +3944,7 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 	}
 	var col collector
 	var said, stop string
-	for ev := range events {
+	take, held := written(func(ev Event) {
 		switch ev.Kind {
 		case KText:
 			said += ev.Text
@@ -3939,7 +3952,11 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 			stop = ev.Stop
 		}
 		col.add(ev)
+	})
+	for ev := range events {
+		take(ev)
 	}
+	held()
 	if col.err != "" && !saidAnything(col.res.Parts) {
 		abort()
 		// a status, as in a stream, so another account can take over

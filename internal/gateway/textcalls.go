@@ -15,7 +15,11 @@ import (
 // </tool_call>, GLM's <tool_call>name<arg_key>…</arg_key><arg_value>…
 // </arg_value></tool_call> (#906), or DeepSeek's own <｜DSML｜invoke
 // name="…"> with its
-// parameters, often with the other's closing tags strewn after it. The
+// parameters, often with the other's closing tags strewn after it, or a
+// model told the conversation again the way the gateway tells a run of it
+// writes its calls the way it reads them made: "[tool call name id=…
+// args=…]" (renderParts, claude_subscription.go; Droid over the
+// subscription bridge). The
 // agent got it as text, ran nothing and ended the turn; told to go on, the
 // model read its own text-written call back and wrote the next one the
 // same way, so the session was lost. When the request offered tools, text
@@ -25,7 +29,7 @@ import (
 // that isn't all such blocks goes on as the text it was.
 
 // textCallMarks are what a call written into the text opens with.
-var textCallMarks = []string{"<tool_call>", "<｜DSML｜", "<|DSML|"}
+var textCallMarks = []string{"<tool_call>", "<｜DSML｜", "<|DSML|", "[tool call "}
 
 // writtenCall is one call read out of the text.
 type writtenCall struct {
@@ -114,7 +118,16 @@ func parseTextCalls(s string, names map[string]bool) (calls []writtenCall, rest 
 	for s != "" {
 		h := strings.Index(s, "<tool_call>")
 		d := dsmlInvoke.FindStringSubmatchIndex(s)
+		m := strings.Index(s, "[tool call ")
 		switch {
+		case m >= 0 && (h < 0 || m < h) && (d == nil || m < d[0]):
+			left.WriteString(s[:m])
+			c, n, good := magpieCall(s[m:], names)
+			if !good {
+				return nil, "", false
+			}
+			calls = append(calls, c)
+			s = s[m+n:]
 		case h >= 0 && (d == nil || h < d[0]):
 			left.WriteString(s[:h])
 			if t := strings.TrimLeft(s[h+len("<tool_call>"):], " \t\r\n"); t == "" || strings.HasPrefix(t, "<") {
@@ -369,6 +382,48 @@ func dsmlCall(s, name string, open int, names map[string]bool) (writtenCall, int
 		return writtenCall{}, 0, false
 	}
 	return writtenCall{Name: name, Args: b}, end, true
+}
+
+// magpieCall reads a call written the way the gateway tells a run of the
+// conversation its calls were made ("[tool call name id=… args={…}]",
+// renderParts, claude_subscription.go), the name as the bridge wrote it:
+// a model told the conversation that way again writes its next call the
+// same way instead of making it (Droid, over the subscription bridge). It
+// says how much of s it took.
+func magpieCall(s string, names map[string]bool) (writtenCall, int, bool) {
+	name, rest, ok := strings.Cut(s[len("[tool call "):], " ")
+	if !ok {
+		return writtenCall{}, 0, false
+	}
+	if n, bridge := strings.CutPrefix(name, "mcp__magpie__"); bridge {
+		name = n
+	}
+	if !names[name] {
+		return writtenCall{}, 0, false
+	}
+	if id, r, ok := strings.Cut(rest, " "); ok && strings.HasPrefix(id, "id=") {
+		rest = r
+	}
+	args, ok := strings.CutPrefix(rest, "args=")
+	if !ok {
+		return writtenCall{}, 0, false
+	}
+	dec := json.NewDecoder(strings.NewReader(args))
+	dec.UseNumber()
+	var v map[string]any
+	if dec.Decode(&v) != nil {
+		return writtenCall{}, 0, false
+	}
+	n := len(s) - len(args) + int(dec.InputOffset()) // past the arguments
+	tail := strings.TrimLeft(s[n:], " \t\r\n")
+	if !strings.HasPrefix(tail, "]") {
+		return writtenCall{}, 0, false
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return writtenCall{}, 0, false
+	}
+	return writtenCall{Name: name, Args: b}, len(s) - len(tail) + 1, true
 }
 
 // callArgs is a call's arguments as a JSON object: one given as a string

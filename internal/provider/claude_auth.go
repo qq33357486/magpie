@@ -21,7 +21,7 @@ import (
 // refused can't be used. It says no "magpie": the words are read back out
 // of an error body (ClaudeSignInRequired), which toldOutside would mask
 // that word out of — the marker has to survive it whole.
-const claudeAuthLapse = "Claude Code could not authenticate this account; it needs signing in again"
+const claudeAuthLapse = "Claude Code could not authenticate this account; sign in again"
 
 // ClaudeSignInRequired says message is Claude Code's, or magpie's, word that
 // a Claude sign-in is gone and has to be made again: not a failure of the

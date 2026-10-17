@@ -464,7 +464,7 @@ func claudeBinary() (claudeCLI, error) {
 	if t, ok := wslrun.Find("claude"); ok {
 		return claudeCLI{wsl: &t}, nil
 	}
-	return claudeCLI{}, errors.New("Claude Code is not available on the server; try again later")
+	return claudeCLI{}, errors.New("Claude Code is not installed; install it and run `claude auth login`, " + claudecode.InstallHint)
 }
 
 func (c claudeCLI) command(ctx context.Context, args ...string) *exec.Cmd {

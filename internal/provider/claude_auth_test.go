@@ -79,7 +79,7 @@ func TestClaudeRefusalHoldsForItsCredentialOnly(t *testing.T) {
 	p, side := claudeAuthFixture(t, "")
 	refused := ClaudeLoginVersion(side.User)
 	NoteClaudeSignInFailure(side.User, refused, "Failed to authenticate: OAuth session expired and could not be refreshed")
-	if _, err := sideToken(t, p, side.User); err == nil || !strings.Contains(err.Error(), "signing in again") {
+	if _, err := sideToken(t, p, side.User); err == nil || !strings.Contains(err.Error(), "sign in again") {
 		t.Fatalf("refused login run: %v", err)
 	}
 	if err := SwitchLogin("claude", side.User); err == nil {

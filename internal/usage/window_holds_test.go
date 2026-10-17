@@ -57,6 +57,10 @@ func TestWindowHoldsReckonsWhatMagpieRouted(t *testing.T) {
 		call(Record{Agent: "claude-code", Provider: "claude", ProviderAccount: "bob@example.com", Status: 200}, time.Hour, "claude-opus-4-7", 5000, 5000, 0, 0, 0),
 		call(Record{Agent: "claude-code", Provider: "anthropic", ProviderKeyID: "k1", Status: 200}, time.Hour, "claude-opus-4-7", 5000, 5000, 0, 0, 0),
 		call(codex, 30*time.Minute, "gpt-5.5", 4000, 1000, 60000, 2000, 0),
+		// an image generation in the same 5 hours, billed by the piece and
+		// priced nowhere by the token: left out, not vetoing the window
+		{Time: now.Add(-20 * time.Minute), Agent: "codex", Provider: "codex", Host: "chatgpt.com as sam@example.com", Status: 200,
+			Operation: "generate_content", Model: "gpt-image-2.5", Input: 2000, Output: 300},
 		call(kiro, 3*24*time.Hour, "claude-sonnet-4-6", 6000, 2000, 0, 0, 0),
 		call(kiro, 24*time.Hour, "kiro-auto", 1000, 1000, 0, 0, 0), // no API price
 	}

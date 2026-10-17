@@ -217,6 +217,17 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 		if r.IsRejected() || r.IsReported() || r.Input+r.Output == 0 {
 			return
 		}
+		// an image or video generation has no API token price — gpt-image
+		// bills by the piece — so counted in, one vetoes the whole
+		// window's price while saying nothing of the text models that
+		// filled it. Generations are left out of the reckoning altogether
+		// (and out of a dry run: a generation a vendor answered while a
+		// window read empty draws on limits of its own, not on credits);
+		// the share they used is in the vendor's percent just the same,
+		// so what is reckoned reads as the text calls' part of the whole.
+		if r.Operation == "generate_content" {
+			return
+		}
 		if next, ok := renamed[r.Provider]; ok {
 			r.Provider = next
 		}

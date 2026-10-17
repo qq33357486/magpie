@@ -17652,6 +17652,7 @@ function holdsLine(h) {
       : t("The whole window ≈ {tokens} tokens of input and output; some of its models have no API price", { tokens: fmtN(h.tokens) }),
     t("Reckoned from what magpie routed through this account in this window: {tokens} tokens in {calls} calls, {cache} cache reads, over the {used} the vendor says is used", { tokens: fmtN(r.tokens || 0), calls: r.calls || 0, cache: fmtN(r.cacheRead || 0), used: Math.round(h.used) + "%" }),
     t("Only magpie's calls are counted: if this account is also used elsewhere, this reads low"),
+    t("Image and video generations are left out: they bill by the piece, not the token"),
     t("A heavier model fills a window sooner: this holds for the models used so far"),
   ].join("\n");
   return line;

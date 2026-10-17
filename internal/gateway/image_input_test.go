@@ -12,6 +12,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 func TestKnownTextOnlyModelRejectsImagesBeforeUpstream(t *testing.T) {
@@ -51,6 +52,9 @@ func TestKnownTextOnlyModelRejectsImagesBeforeUpstream(t *testing.T) {
 		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "不支持图片输入") {
 			t.Errorf("%s: %d %s", tc.path, rec.Code, rec.Body.String())
 		}
+		// why magpie takes it for text-only, and where that is changed
+		// (KimYx0207 on X), is the operator's: said to the log alone
+		// (fork_errors.go's rules), the customer told the Chinese of it
 	}
 	if sent != 0 {
 		t.Fatalf("text-only images reached upstream %d times", sent)
@@ -479,5 +483,43 @@ func TestGeminiNonImageFileTranslation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A model the user marked text-only themselves is turned away saying so,
+// and a group with no member that takes images says that, each with where
+// it is changed (KimYx0207 on X).
+func TestTextOnlyRefusalSaysWhyAndWhere(t *testing.T) {
+	fresh(t)
+	noVision(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("an image for a text-only model reached upstream: %s", r.URL)
+	}))
+	defer up.Close()
+	if err := provider.Save(provider.Provider{ID: "probe", Name: "Probe", Chat: up.URL + "/v1", Key: "key", Models: []string{"sol", "text"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("probe", up.URL+"/v1", []catalog.Model{
+		{ID: "sol", Images: true, ImageInput: imageInputBool(true)},
+		{ID: "text", ImageInput: imageInputBool(false)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s0 := settings.Load()
+	s0.ModelImages = map[string]bool{"probe/sol": false}
+	if err := settings.Save(s0); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "Words", Members: []string{"probe/text", "probe/sol"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	body := `{"model":"MODEL","messages":[{"role":"user","content":[{"type":"text","text":"read"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`
+	for _, model := range []string{"probe/sol", "group/words"} {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(strings.Replace(body, "MODEL", model, 1))))
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "不支持图片输入") {
+			t.Errorf("%s: %d %s", model, rec.Code, rec.Body.String())
+		}
 	}
 }

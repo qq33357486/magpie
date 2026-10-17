@@ -34,7 +34,7 @@ type webHost struct{ quit func() }
 func (webHost) HidePanel()                       {}
 func (webHost) ShowMain(string)                  {}
 func (h webHost) Quit()                          { h.quit() }
-func (webHost) OpenURL(string)                   {} // the page opens links itself
+func (webHost) OpenURL(string) error             { return nil } // the page opens links itself
 func (webHost) Copy(string) bool                 { return false }
 func (webHost) FitPanel(int, Glide)              {}
 func (webHost) TintPanel([4]uint8, int) bool     { return false }
@@ -83,6 +83,11 @@ func StartWeb(addr, version string) (*Web, error) {
 	if err != nil {
 		return nil, err
 	}
+	// with --tls-cert, the page is HTTPS to other computers, as the
+	// gateway is: it carries the settings and keys
+	if ln, err = gateway.ServeTLS(ln); err != nil {
+		return nil, err
+	}
 	w := &Web{Addr: ln.Addr().String(), key: key, quit: make(chan struct{})}
 	host, port, _ := net.SplitHostPort(w.Addr)
 	if ip := net.ParseIP(host); ip == nil || ip.IsUnspecified() {
@@ -90,16 +95,36 @@ func StartWeb(addr, version string) (*Web, error) {
 	}
 	var once sync.Once
 	quit := func() { once.Do(func() { close(w.quit) }) }
-	w.Link = "http://" + net.JoinHostPort(host, port) + "/?k=" + url.QueryEscape(key)
+	// on loopback the page takes plain HTTP with TLS on too, which a
+	// browser here opens without a certificate for 127.0.0.1
+	scheme := "http"
+	if ip := net.ParseIP(host); ip != nil && !ip.IsLoopback() {
+		scheme = gateway.Scheme()
+	}
+	w.Link = scheme + "://" + net.JoinHostPort(host, port) + "/?k=" + url.QueryEscape(key)
 	w.srv = &http.Server{
 		Handler:           gateway.AllowGuard(webHandler(port, key, keep, Handler(webHost{quit}, startBackend()))),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go w.srv.Serve(ln)
+	// Settings' AutoRestart: magpie web runs on as the new version (#2096)
+	updates.autoRestart = func() bool {
+		if restartInto(true, false, "", true) {
+			quit()
+			return true
+		}
+		return false
+	}
 	updates.start()
 	news.start()
 	return w, nil
 }
+
+// ServesGateway says whether this process serves the gateway, which it
+// doesn't while another magpie (the service, the app, magpie serve) has
+// it: the page then shows that one's settings and accounts, read from the
+// same files, and this one takes the gateway up once that one is gone.
+func (w *Web) ServesGateway() bool { return served.Load() != nil }
 
 // Wait returns once the page's Quit is used. After a restart to update it
 // runs the new version in this one's place, with the same arguments and
@@ -138,19 +163,33 @@ func webKey() (key string, fixed bool, err error) {
 		}
 	}
 	if k := os.Getenv("MAGPIE_WEB_KEY"); k != "" {
-		if len(k) < webKeyMin {
-			return "", false, fmt.Errorf("MAGPIE_WEB_KEY is %d characters; it needs at least %d", len(k), webKeyMin)
-		}
-		// a cookie can't hold a space, ; " \ or a comma: the browser would
-		// be sent one that isn't the key, and turned away
-		if strings.Trim(k, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~") != "" {
-			return "", false, errors.New("MAGPIE_WEB_KEY takes letters, digits and - . _ ~ only (openssl rand -hex 16 makes one)")
+		if err := CheckWebKey(k); err != nil {
+			return "", false, err
 		}
 		return k, true, nil
 	}
+	return NewWebKey(), false, nil
+}
+
+// NewWebKey is a new random key for the page.
+func NewWebKey() string {
 	b := make([]byte, 16)
 	rand.Read(b)
-	return hex.EncodeToString(b), false, nil
+	return hex.EncodeToString(b)
+}
+
+// CheckWebKey says what is wrong with k as a MAGPIE_WEB_KEY, nil when
+// nothing is.
+func CheckWebKey(k string) error {
+	if len(k) < webKeyMin {
+		return fmt.Errorf("MAGPIE_WEB_KEY is %d characters; it needs at least %d", len(k), webKeyMin)
+	}
+	// a cookie can't hold a space, ; " \ or a comma: the browser would
+	// be sent one that isn't the key, and turned away
+	if strings.Trim(k, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~") != "" {
+		return errors.New("MAGPIE_WEB_KEY takes letters, digits and - . _ ~ only (openssl rand -hex 16 makes one)")
+	}
+	return nil
 }
 
 // webGuard lets through requests with the key: in the link's k, which it
@@ -169,6 +208,13 @@ func webGuard(cookie, key string, keep time.Duration, next http.Handler) http.Ha
 		http.Redirect(rw, r, back, http.StatusSeeOther)
 	}
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		// a plugin's page's files: a sandboxed frame's requests carry no
+		// cookie, and its token, which only a signed-in /api hands out,
+		// is the key (servePluginPage serves nothing without a good one)
+		if strings.HasPrefix(r.URL.Path, pluginPagePrefix) {
+			next.ServeHTTP(rw, r)
+			return
+		}
 		if q := r.URL.Query(); q.Has("k") {
 			if !same(q.Get("k")) {
 				http.Error(rw, "this link's key is not this magpie web's: use the link it printed when it started", http.StatusUnauthorized)
@@ -251,7 +297,7 @@ func NetworkLinks(port, key string) []string {
 	}
 	var out []string
 	for _, a := range LANAddrs() {
-		out = append(out, "http://"+net.JoinHostPort(a, port)+key)
+		out = append(out, gateway.Scheme()+"://"+net.JoinHostPort(a, port)+key)
 	}
 	return out
 }

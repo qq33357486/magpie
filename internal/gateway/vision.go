@@ -36,7 +36,12 @@ func init() {
 // VisionAgent is the User-Agent of the descriptions magpie asks for.
 const VisionAgent = "magpie-vision/1"
 
-const visionTimeout = 2 * time.Minute
+// visionTimeout is how long the vendor has to describe an image, from when
+// the request went out to it (each try's own), and visionWaitMost how long
+// a description may take in all, the waits for a slot or a resting provider
+// with it (sideDeadline, #2318): a reasoning model describing a dense
+// screenshot can take more than two minutes by itself.
+var visionTimeout, visionWaitMost = 3 * time.Minute, 10 * time.Minute
 
 // visionParallel is how many images of a request are described at once.
 const visionParallel = 4
@@ -138,6 +143,26 @@ func missingSeerNote() string {
 	return ""
 }
 
+// textOnlyNote is what a request turned away for its image says of why
+// magpie takes the model for text-only and where that is changed, so the
+// reader turns on the model's switch rather than trying another model or
+// reinstalling the agent (KimYx0207 on X, over mark_li21's Codex paste): the
+// user's own answer, else what the provider's list says; for a group, that
+// none of its members is marked as taking images.
+func textOnlyNote(p provider.Provider, model string, group string) string {
+	if group != "" {
+		return fmt.Sprintf("; no model in the group %s is marked as taking images: turn on Accepts images for one that does, in its provider's Names & levels in magpie", group)
+	}
+	name := p.Name
+	if name == "" {
+		name = p.ID
+	}
+	if v, ok := provider.ImageOverride(p.ID, model); ok && !v {
+		return fmt.Sprintf("; Accepts images is turned off for it in magpie, in Providers → %s → Names & levels", name)
+	}
+	return fmt.Sprintf("; %s's model list marks it as not taking images: if it does, turn on Accepts images for it in magpie, in Providers → %s → Names & levels", name, name)
+}
+
 // noSeerNote is what a request turned away for an image says of why no
 // model described it: the picked one is missing, Image recognition is
 // off, or none of the models the user enabled can see.
@@ -234,7 +259,7 @@ func autoSpent(model string) error {
 	}
 	when := ""
 	if !back.IsZero() {
-		when = " until " + back.Local().Format("Jan 2 15:04")
+		when = " until " + heldClock(back, time.Now())
 	}
 	return fmt.Errorf("%s is out of its allowance%s, as is every other model magpie could describe it with, and none is asked until one is back", model, when)
 }
@@ -311,7 +336,7 @@ func (s *Server) askVisionWith(ctx context.Context, model, src, system, text str
 	if err := autoSpent(model); err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(context.WithValue(ctx, describingKey{}, true), visionTimeout)
+	ctx, cancel := sideDeadline(context.WithValue(ctx, describingKey{}, true), "image description", visionTimeout, visionWaitMost)
 	defer cancel()
 	req := map[string]any{
 		"model":  model,
@@ -345,8 +370,11 @@ func (s *Server) askVisionWith(ctx context.Context, model, src, system, text str
 	}
 	w := httptest.NewRecorder()
 	s.serve(w, r, provider.Chat, body)
+	if t, ok := sideTimeout(ctx); ok {
+		return "", t
+	}
 	if ctx.Err() != nil {
-		return "", fmt.Errorf("no answer in %s", visionTimeout)
+		return "", ctx.Err()
 	}
 	var out struct {
 		Choices []struct {

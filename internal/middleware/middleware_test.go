@@ -128,7 +128,6 @@ func TestReject(t *testing.T) {
 
 func TestFailOpen(t *testing.T) {
 	was := requestLimit
-	requestLimit = 50 * time.Millisecond
 	defer func() { requestLimit = was }()
 	e := file(t, `
 let n = 0;
@@ -143,6 +142,12 @@ export function onRequest(body) {
 	use(t, e)
 	for _, kind := range []string{"throw", "spin", "string"} {
 		in := `{"kind":"` + kind + `"}`
+		// Only the spin is cut short: under a full run's load a throw or a
+		// string can take longer than 50ms, and would fail for the limit.
+		requestLimit = was
+		if kind == "spin" {
+			requestLimit = 50 * time.Millisecond
+		}
 		r := Begin(info())
 		start := time.Now()
 		body, rej := r.Request([]byte(in))
@@ -304,6 +309,32 @@ func TestStreamUnchangedPassesBytes(t *testing.T) {
 		if st.Failures != 0 || st.Calls != 2 {
 			t.Fatalf("state %+v", st)
 		}
+	}
+}
+
+// A keepalive comment goes to the agent as it is written, not with the
+// event after it: held, a proxy in front of magpie heard nothing while the
+// vendor reasoned silently and hung up (#2402).
+func TestStreamKeepaliveNotHeld(t *testing.T) {
+	use(t, file(t, `export function onEvent(ev) { ev.seen = true; return ev; }`))
+	r := Begin(info())
+	defer r.End()
+	rec := httptest.NewRecorder()
+	w, done := r.Wrap(rec)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	for i, s := range []string{": keepalive\n", ": keepalive\r\n", "\n", "data: {\"a\":1}\n", ": keep"} {
+		w.Write([]byte(s))
+		if want := []int{1, 2, 2, 2, 2}[i]; strings.Count(rec.Body.String(), ": keepalive") != want {
+			t.Fatalf("after %q: %q", s, rec.Body.String())
+		}
+	}
+	w.Write([]byte("alive\n\n"))
+	done()
+	// a comment inside an event stays in it, the event changed around it
+	want := ": keepalive\n: keepalive\r\n\n" + `data: {"a":1,"seen":true}` + "\n: keepalive\n\n"
+	if got := rec.Body.String(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 

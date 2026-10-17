@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // forkNoneTask is the first request Codex 0.162 (rust-v0.162.0-alpha.17.2)
@@ -65,5 +67,64 @@ func TestSealedTaskWithForkTurnsNoneSaysTheTaskItselfIsSealed(t *testing.T) {
 		!strings.Contains(msg, "（ag/dfmodel）无法读取") ||
 		!strings.Contains(msg, "重新下发") {
 		t.Fatalf("the refusal doesn't say the task itself is sealed whatever fork_turns says: %s", msg)
+	}
+}
+
+// #2245 (qikairo7): a lead on gpt-6.1-sol, a ChatGPT account, spawns a
+// subagent on a group of DeepSeek only. The subagent is turned away as
+// before, and the refusal now names the way to subagents on any model:
+// Settings' "Codex subagents on any model" (#141), which has the lead
+// hand its tasks on as text. With it on, a thread still sealing its tasks
+// is told why: begun before it, or Codex's own multi_agent_v2.
+func TestSealedTaskNamesSubagentsOnAnyModel(t *testing.T) {
+	fresh(t)
+	chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`))
+	})
+	asked := chatOnlyOn(t, "ag")
+	s := New()
+	if rec := codexSubTurn(s, "gpt-6.1-sol", "lead-2245", "", leadAsk); rec.Code != 200 {
+		t.Fatalf("lead on a ChatGPT model: %d %s", rec.Code, rec.Body.String())
+	}
+	refusal := func() string {
+		t.Helper()
+		body := strings.ReplaceAll(forkNoneTask, "ag/gemini-3.8-flash", "ag/dfmodel")
+		req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer chatgpt-token")
+		req.Header.Set("chatgpt-account-id", "acct-1")
+		req.Header.Set("User-Agent", "Codex Desktop/0.162.0-alpha.17.2 (Windows 10.0.26300; x86_64) unknown (Codex Desktop; 26.1007.71326)")
+		req.Header.Set("session_id", "worker-2245")
+		req.Header.Set("x-codex-parent-thread-id", "lead-2245")
+		req.Header.Set("x-openai-subagent", "collab_spawn")
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		var got struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		json.Unmarshal(rec.Body.Bytes(), &got)
+		if rec.Code != 400 || *asked != 0 {
+			t.Fatalf("subagent: %d %s (ag asked %d times)", rec.Code, rec.Body.String(), *asked)
+		}
+		return got.Error.Message
+	}
+	// the fork's customer refusal is Chinese either way (fork_errors.go);
+	// the setting's guidance is the operator's, in the logged detail
+	if msg := refusal(); !strings.Contains(msg, "已由上游加密绑定") || !strings.Contains(msg, "（ag/dfmodel）无法读取") {
+		t.Fatalf("the refusal doesn't say the task is sealed: %s", msg)
+	}
+	if msg := sealedTaskError("ag/dfmodel", "", ""); !strings.Contains(msg, `turn on "Codex subagents on any model" in magpie's Settings and start a new thread`) {
+		t.Fatalf("the logged detail doesn't name the setting: %s", msg)
+	}
+	st := settings.Load()
+	st.CodexAgentsV1 = true
+	if err := settings.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	if msg := sealedTaskError("ag/dfmodel", "", ""); !strings.Contains(msg, `"Codex subagents on any model" is on`) || !strings.Contains(msg, "features.multi_agent_v2") || strings.Contains(msg, "turn on") {
+		t.Fatalf("with the setting on, the logged detail doesn't say why the thread is still sealed: %s", msg)
 	}
 }
